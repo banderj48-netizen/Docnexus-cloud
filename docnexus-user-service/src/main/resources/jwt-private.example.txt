@@ -1,0 +1,13 @@
+真实文件名：jwt-private.p12
+
+说明：
+这个文件只是占位说明，不是可用私钥。真实的 jwt-private.p12 不提交到 Git。
+
+生成建议：
+使用 keytool 生成 PKCS12 密钥库，并把路径、别名和密码通过环境变量传给 user-service：
+
+JWT_PRIVATE_KEYSTORE_LOCATION=classpath:jwt-private.p12
+JWT_PRIVATE_STORE_PASSWORD=change-me
+JWT_PRIVATE_KEY_ALIAS=jwt-keypair
+JWT_PRIVATE_KEY_PASSWORD=change-me
+

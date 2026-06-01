@@ -1,0 +1,65 @@
+# ==============================
+# DocNexus Cloud 项目忽略规则
+# ==============================
+
+# 只上传根目录 ReadMe.md，其它设计过程文档、PDF 导出文档不进入 GitHub
+*.md
+!/ReadMe.md
+*.pdf
+
+# Java / Maven 编译产物
+target/
+**/target/
+*.class
+*.jar
+*.war
+*.ear
+
+# 前端依赖和构建产物
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.vite/
+**/.vite/
+
+# Python 运行和缓存产物
+__pycache__/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# IDE 和本地工作区文件
+.idea/
+*.iml
+.vscode/
+
+# 真实配置文件不上传，只上传 application.example.* 示例文件
+**/src/main/resources/application.yml
+**/src/main/resources/application.yaml
+**/src/main/resources/application.properties
+!**/src/main/resources/application.example.yml
+!**/src/main/resources/application.example.yaml
+!**/src/main/resources/application.example.properties
+
+# 密钥、证书和本地敏感文件
+*.p12
+*.jks
+*.pem
+*.key
+*.cer
+*.crt
+.env
+.env.*
+!.env.example
+runtime/
+
+# 日志和临时文件
+logs/
+*.log
+*.tmp
+*.bak
+*.swp

@@ -1,0 +1,74 @@
+server:
+  port: ${USER_SERVICE_PORT:8101}
+
+docnexus:
+  jwt:
+    issuer: ${JWT_ISSUER:docnexus-cloud}
+    expire-seconds: ${JWT_EXPIRE_SECONDS:120000}
+    refresh-token-expire-seconds: ${JWT_REFRESH_TOKEN_EXPIRE_SECONDS:2592000}
+    blacklist-location: ${JWT_BLACKLIST_LOCATION:./runtime/jwt-blacklist.txt}
+    private-key-store:
+      location: ${JWT_PRIVATE_KEYSTORE_LOCATION:classpath:jwt-private.p12}
+      type: ${JWT_PRIVATE_KEYSTORE_TYPE:PKCS12}
+      store-password: ${JWT_PRIVATE_STORE_PASSWORD:change-me}
+      key-alias: ${JWT_PRIVATE_KEY_ALIAS:jwt-keypair}
+      key-password: ${JWT_PRIVATE_KEY_PASSWORD:change-me}
+  login-security:
+    ip-max-attempts: ${LOGIN_IP_MAX_ATTEMPTS:60}
+    ip-window-seconds: ${LOGIN_IP_WINDOW_SECONDS:60}
+    username-max-failures: ${LOGIN_USERNAME_MAX_FAILURES:5}
+    username-failure-window-seconds: ${LOGIN_USERNAME_FAILURE_WINDOW_SECONDS:900}
+    username-lock-seconds: ${LOGIN_USERNAME_LOCK_SECONDS:900}
+  session-event:
+    topic: ${SESSION_EVENT_TOPIC:docnexus_user_session}
+    consumer-group: ${SESSION_EVENT_CONSUMER_GROUP:docnexus-user-session-consumer-group}
+
+rocketmq:
+  name-server: ${ROCKETMQ_NAMESRV_ADDR:127.0.0.1:9876}
+  producer:
+    group: ${ROCKETMQ_USER_SESSION_PRODUCER_GROUP:docnexus-user-session-producer-group}
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 2
+
+spring:
+  application:
+    name: docnexus-user-service
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: 3s
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/docnexus_cloud?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:change-me}
+  cloud:
+    nacos:
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:change-me}
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: ${NACOS_GROUP:DEFAULT_GROUP}
+
+mybatis:
+  mapper-locations: classpath*:com/xyf/docnexus/user/Mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    com.xyf.docnexus.user: info
+    com.xyf.docnexus.user.Service: info
+    com.xyf.docnexus.user.Mapper: info
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+

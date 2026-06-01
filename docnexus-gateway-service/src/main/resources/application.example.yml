@@ -1,0 +1,81 @@
+server:
+  port: ${GATEWAY_PORT:8088}
+
+spring:
+  application:
+    name: docnexus-gateway-service
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: 1s
+      lettuce:
+        pool:
+          max-active: ${REDIS_POOL_MAX_ACTIVE:128}
+          max-idle: ${REDIS_POOL_MAX_IDLE:32}
+          min-idle: ${REDIS_POOL_MIN_IDLE:8}
+          max-wait: ${REDIS_POOL_MAX_WAIT:200ms}
+  cloud:
+    nacos:
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:change-me}
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: ${NACOS_GROUP:DEFAULT_GROUP}
+    gateway:
+      server:
+        webflux:
+          discovery:
+            locator:
+              enabled: true
+          routes:
+            - id: docnexus-user-service
+              uri: lb://docnexus-user-service
+              predicates:
+                - Path=/api/auth/**,/api/users/**
+            - id: docnexus-file-service
+              uri: lb://docnexus-file-service
+              predicates:
+                - Path=/api/files/**
+            - id: docnexus-document-service
+              uri: lb://docnexus-document-service
+              predicates:
+                - Path=/api/documents/**
+
+docnexus:
+  gateway-auth-cache:
+    enabled: ${GATEWAY_AUTH_CACHE_ENABLED:true}
+    ttl-ms: ${GATEWAY_AUTH_CACHE_TTL_MS:3000}
+    max-size: ${GATEWAY_AUTH_CACHE_MAX_SIZE:300000}
+    strict-paths:
+      - /api/auth/logout
+      - /api/users/me/password
+      - /api/users/me/sessions/**
+      - /api/files/upload
+      - /api/files/multipart/**
+      - /api/files/uploads/**
+  jwt:
+    issuer: ${JWT_ISSUER:docnexus-cloud}
+    clock-skew-seconds: ${JWT_CLOCK_SKEW_SECONDS:60}
+    public-cert:
+      location: ${JWT_PUBLIC_CERT_LOCATION:classpath:jwt-public.cer}
+    white-list:
+      - /api/auth/login
+      - /api/auth/register
+      - /api/auth/refresh
+      - /api/auth/password/recovery/**
+      - /actuator/**
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+
+logging:
+  level:
+    com.xyf.docnexus.gateway: info
+

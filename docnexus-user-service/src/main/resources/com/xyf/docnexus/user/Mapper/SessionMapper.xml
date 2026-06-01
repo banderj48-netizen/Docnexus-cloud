@@ -1,0 +1,227 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xyf.docnexus.user.Mapper.SessionMapper">
+
+    <insert id="insertSession" parameterType="com.xyf.docnexus.user.entity.UserSession">
+        insert into user_session (
+            session_id, user_id, refresh_token_hash, access_jti, token_version,
+            device_id, device_name, client_ip, user_agent, status,
+            login_at, last_active_at, access_expires_at, refresh_expires_at,
+            online_status, create_time, update_time
+        ) values (
+                     #{sessionId}, #{userId}, #{refreshTokenHash}, #{accessJti}, #{tokenVersion},
+                     #{deviceId}, #{deviceName}, #{clientIp}, #{userAgent}, #{status},
+                     #{loginAt}, #{lastActiveAt}, #{accessExpiresAt}, #{refreshExpiresAt},
+                     #{onlineStatus}, #{createTime}, #{updateTime}
+                 )
+    </insert>
+
+    <select id="selectActiveBySessionId" resultType="com.xyf.docnexus.user.entity.UserSession">
+        select *
+        from user_session
+        where session_id = #{sessionId}
+          and status = 'ACTIVE'
+        <if test="userId != null">
+          and user_id = #{userId}
+        </if>
+        limit 1
+    </select>
+
+    <select id="selectActiveByAccessJti" resultType="com.xyf.docnexus.user.entity.UserSession">
+        select *
+        from user_session
+        where access_jti = #{accessJti}
+          and status = 'ACTIVE'
+        <if test="userId != null">
+          and user_id = #{userId}
+        </if>
+        limit 1
+    </select>
+
+    <select id="selectActiveByUserIdAndDeviceId" resultType="com.xyf.docnexus.user.entity.UserSession">
+        select *
+        from user_session
+        where user_id = #{userId}
+          and device_id = #{deviceId}
+          and status = 'ACTIVE'
+        order by last_active_at desc, login_at desc
+        limit 1
+    </select>
+
+    <select id="selectActiveByUserIdAndClientIp" resultType="com.xyf.docnexus.user.entity.UserSession">
+        select *
+        from user_session
+        where user_id = #{userId}
+          and client_ip = #{clientIp}
+          and status = 'ACTIVE'
+        order by last_active_at desc, login_at desc
+    </select>
+
+    <select id="selectActiveByUserId" resultType="com.xyf.docnexus.user.entity.UserSession">
+        select *
+        from user_session
+        where user_id = #{userId}
+          and status = 'ACTIVE'
+        order by last_active_at desc, login_at desc
+    </select>
+
+    <select id="selectExpiredActiveByUserId" resultType="com.xyf.docnexus.user.entity.UserSession">
+        select *
+        from user_session
+        where user_id = #{userId}
+          and status = 'ACTIVE'
+          and refresh_expires_at &lt;= #{now}
+    </select>
+
+    <select id="countActiveByUserId" resultType="java.lang.Long">
+        select count(1)
+        from user_session
+        where user_id = #{userId}
+          and status = 'ACTIVE'
+    </select>
+
+    <select id="selectActivePageByUserId" resultType="com.xyf.docnexus.user.entity.UserSession">
+        select *
+        from user_session
+        where user_id = #{userId}
+          and status = 'ACTIVE'
+        order by last_active_at desc, login_at desc
+        limit #{offset}, #{pageSize}
+    </select>
+
+    <select id="selectLatestLoginAtByUserId" resultType="java.time.LocalDateTime">
+        select login_at
+        from user_session
+        where user_id = #{userId}
+        order by login_at desc
+        limit 1
+    </select>
+
+    <update id="rotateSessionToken" parameterType="com.xyf.docnexus.user.entity.UserSession">
+        update user_session
+        set refresh_token_hash = #{refreshTokenHash},
+            access_jti = #{accessJti},
+            token_version = #{tokenVersion},
+            last_active_at = #{lastActiveAt},
+            online_status = #{onlineStatus},
+            offline_at = #{offlineAt},
+            access_expires_at = #{accessExpiresAt},
+            refresh_expires_at = #{refreshExpiresAt},
+            update_time = #{updateTime}
+        where session_id = #{sessionId}
+          and status = 'ACTIVE'
+        <if test="userId != null">
+          and user_id = #{userId}
+        </if>
+    </update>
+
+    <update id="updateTakeoverSessionToken" parameterType="com.xyf.docnexus.user.entity.UserSession">
+        update user_session
+        set refresh_token_hash = #{refreshTokenHash},
+            access_jti = #{accessJti},
+            token_version = #{tokenVersion},
+            client_ip = #{clientIp},
+            user_agent = #{userAgent},
+            device_id = #{deviceId},
+            device_name = #{deviceName},
+            last_active_at = case
+                when last_active_at is null or last_active_at &lt; #{lastActiveAt}
+                then #{lastActiveAt}
+                else last_active_at
+            end,
+            online_status = #{onlineStatus},
+            offline_at = #{offlineAt},
+            access_expires_at = #{accessExpiresAt},
+            refresh_expires_at = #{refreshExpiresAt},
+            update_time = #{updateTime}
+        where session_id = #{sessionId}
+          and user_id = #{userId}
+          and status = 'ACTIVE'
+    </update>
+
+    <update id="logoutByAccessJti" parameterType="com.xyf.docnexus.user.entity.UserSessionLogoutParam">
+        update user_session
+        set status = #{status},
+            online_status = 'OFFLINE',
+            logout_at = #{logoutAt},
+            expired_at = #{logoutAt},
+            close_reason = 'LOGOUT',
+            update_time = #{updateTime}
+        where access_jti = #{accessJti}
+          and status = 'ACTIVE'
+    </update>
+
+    <update id="logoutBySessionId" parameterType="com.xyf.docnexus.user.entity.UserSessionLogoutParam">
+        update user_session
+        set status = #{status},
+            online_status = 'OFFLINE',
+            logout_at = #{logoutAt},
+            expired_at = #{logoutAt},
+            close_reason = 'LOGOUT',
+            update_time = #{updateTime}
+        where session_id = #{sessionId}
+          and status = 'ACTIVE'
+    </update>
+
+    <update id="logoutAllByUserId" parameterType="com.xyf.docnexus.user.entity.UserSessionLogoutParam">
+        update user_session
+        set status = #{status},
+            online_status = 'OFFLINE',
+            logout_at = #{logoutAt},
+            expired_at = #{logoutAt},
+            close_reason = 'LOGOUT',
+            update_time = #{updateTime}
+        where user_id = #{userId}
+          and status = 'ACTIVE'
+    </update>
+
+    <update id="expireActiveByUserId" parameterType="com.xyf.docnexus.user.entity.UserSessionLogoutParam">
+        update user_session
+        set status = #{status},
+            online_status = 'OFFLINE',
+            logout_at = #{logoutAt},
+            expired_at = #{logoutAt},
+            close_reason = 'REFRESH_EXPIRED',
+            update_time = #{updateTime}
+        where user_id = #{userId}
+          and status = 'ACTIVE'
+          and refresh_expires_at &lt;= #{logoutAt}
+    </update>
+    <update id="expireBySessionId" parameterType="com.xyf.docnexus.user.entity.UserSessionLogoutParam">
+        update user_session
+        set status = 'EXPIRED',
+            online_status = 'OFFLINE',
+            expired_at = COALESCE(#{expiredAt}, NOW()),
+            logout_at = case
+                            when #{closeReason} = 'LOGOUT' then COALESCE(#{expiredAt}, NOW())
+                            else logout_at
+                end,
+            close_reason = COALESCE(#{closeReason}, 'UNKNOWN'),
+            last_active_at = case
+                when #{lastActiveAt} is not null
+                    and (last_active_at is null or last_active_at &lt; #{lastActiveAt})
+                then #{lastActiveAt}
+                else last_active_at
+                end,
+            update_time = COALESCE(#{updateTime}, NOW())
+        where session_id = #{sessionId}
+          and user_id = #{userId}
+          and status = 'ACTIVE'
+    </update>
+
+    <update id="markOfflineBySessionId" parameterType="com.xyf.docnexus.user.entity.UserSessionLogoutParam">
+        update user_session
+        set online_status = 'OFFLINE',
+            offline_at = COALESCE(#{logoutAt}, NOW()),
+            last_active_at = case
+                when #{lastActiveAt} is not null
+                    and (last_active_at is null or last_active_at &lt; #{lastActiveAt})
+                then #{lastActiveAt}
+                else last_active_at
+                end,
+            update_time = COALESCE(#{updateTime}, NOW())
+        where session_id = #{sessionId}
+          and status = 'ACTIVE'
+    </update>
+
+</mapper>

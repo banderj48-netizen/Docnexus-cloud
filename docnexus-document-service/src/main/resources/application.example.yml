@@ -1,0 +1,21 @@
+server:
+  port: ${DOCUMENT_SERVICE_PORT:8103}
+
+spring:
+  application:
+    name: docnexus-document-service
+  cloud:
+    nacos:
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:change-me}
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: ${NACOS_GROUP:DEFAULT_GROUP}
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info
+

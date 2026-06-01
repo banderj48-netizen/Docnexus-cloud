@@ -1,0 +1,11 @@
+真实文件名：jwt-public.cer
+
+说明：
+这个文件只是占位说明，不是可用公钥证书。真实的 jwt-public.cer 不提交到 Git。
+
+使用方式：
+从 user-service 的 JWT 私钥库导出公钥证书，放到 gateway-service 的资源目录或外部配置路径中，
+再通过环境变量指定：
+
+JWT_PUBLIC_CERT_LOCATION=classpath:jwt-public.cer
+
