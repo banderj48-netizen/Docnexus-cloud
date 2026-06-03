@@ -31,10 +31,18 @@
     <hutool.version>5.8.36</hutool.version>
     <!-- RocketMQ Spring Boot Starter 版本，所有子模块统一从父工程继承，子模块不写版本 -->
     <rocketmq-spring-boot.version>2.3.5</rocketmq-spring-boot.version>
+    <!-- Sentinel Gateway Adapter 版本，网关限流适配器由父工程统一管理，子模块不写版本 -->
+    <sentinel.version>1.8.8</sentinel.version>
     <!-- Caffeine：Gateway 本地鉴权缓存，所有子模块统一从父工程继承版本 -->
     <caffeine.version>3.2.3</caffeine.version>
     <!-- commons-pool2：Lettuce Redis 连接池依赖，所有子模块统一从父工程继承版本 -->
     <commons-pool2.version>2.12.1</commons-pool2.version>
+    <!-- MinIO：文件服务对象存储客户端，所有子模块统一从父工程继承版本 -->
+    <minio.version>8.6.0</minio.version>
+    <!-- OkHttp JVM 实现：MinIO 8.6.0 编译期需要明确的 JVM 包 -->
+    <okhttp-jvm.version>5.1.0</okhttp-jvm.version>
+    <!-- gRPC Netty：Spring Cloud Gateway gRPC 自动配置需要，版本由父工程统一管理 -->
+    <grpc-netty.version>1.53.0</grpc-netty.version>
 
 
   </properties>
@@ -46,6 +54,7 @@
     <module>docnexus-user-service</module>
     <module>docnexus-file-service</module>
     <module>docnexus-document-service</module>
+    <module>docnexus-log-service</module>
   </modules>
 
   <dependencyManagement>
@@ -103,6 +112,12 @@
       </dependency>
 
       <dependency>
+        <groupId>com.alibaba.csp</groupId>
+        <artifactId>sentinel-spring-cloud-gateway-adapter</artifactId>
+        <version>${sentinel.version}</version>
+      </dependency>
+
+      <dependency>
         <groupId>com.github.ben-manes.caffeine</groupId>
         <artifactId>caffeine</artifactId>
         <version>${caffeine.version}</version>
@@ -112,6 +127,24 @@
         <groupId>org.apache.commons</groupId>
         <artifactId>commons-pool2</artifactId>
         <version>${commons-pool2.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>io.minio</groupId>
+        <artifactId>minio</artifactId>
+        <version>${minio.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>com.squareup.okhttp3</groupId>
+        <artifactId>okhttp-jvm</artifactId>
+        <version>${okhttp-jvm.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>io.grpc</groupId>
+        <artifactId>grpc-netty</artifactId>
+        <version>${grpc-netty.version}</version>
       </dependency>
 
     </dependencies>

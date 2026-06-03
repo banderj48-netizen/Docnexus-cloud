@@ -313,6 +313,7 @@ import { REGEX, STORAGE_KEYS } from '../constants'
 import { userApi } from '../api/user'
 import { clearAuthState } from '../utils/auth'
 import { getUserIdFromToken } from '../utils/jwt'
+import { notifyUserOperationChanged } from '../utils/sidebarStats'
 import profileSectionIcon from '../assets/account-icons/profile-section.svg'
 import sessionSectionIcon from '../assets/account-icons/session-section.svg'
 import edgeIcon from '../assets/browser-icons/compact/edge.png'
@@ -367,6 +368,24 @@ const passwordForm = reactive({
   newPassword: '',
   confirmPassword: '',
 })
+
+/**
+ * 统一清理表单文本两侧空白，避免空格差异导致误判为已修改。
+ */
+const normalizeFormText = value => String(value || '').trim()
+
+/**
+ * 判断个人资料表单是否没有实际变化，未变化时不请求后端。
+ */
+const isProfileFormUnchanged = () => (
+  normalizeFormText(editForm.phone) === normalizeFormText(profile.phone)
+  && normalizeFormText(editForm.email) === normalizeFormText(profile.email)
+)
+
+/**
+ * 判断新密码是否与原密码相同，相同时不请求后端修改密码接口。
+ */
+const isPasswordFormUnchanged = () => normalizeFormText(passwordForm.oldPassword) === normalizeFormText(passwordForm.newPassword)
 
 const userInitial = computed(() => profile.username.trim().charAt(0).toUpperCase() || '用')
 const isAccountEnabled = computed(() => String(profile.accountStatus || '').toUpperCase() !== 'DISABLE')
@@ -723,6 +742,7 @@ const formatUserAgent = (userAgent) => {
 
 const logoutSession = async (session) => {
   loggingOutSessionId.value = session.sessionId
+  notifyUserOperationChanged()
   try {
     await userApi.logoutUserSession(session.sessionId)
     ElMessage.success(session.current ? '当前设备已退出' : '会话已退出')
@@ -747,6 +767,11 @@ const openEditDialog = async () => {
 
 const submitProfile = async () => {
   await editFormRef.value?.validate()
+  if (isProfileFormUnchanged()) {
+    ElMessage.info('个人资料没有变化，无需保存')
+    return
+  }
+  notifyUserOperationChanged()
   savingProfile.value = true
   try {
     const response = await userApi.updateCurrentProfile(editForm)
@@ -772,6 +797,11 @@ const openPasswordDialog = () => {
 
 const submitPassword = async () => {
   await passwordFormRef.value?.validate()
+  if (isPasswordFormUnchanged()) {
+    ElMessage.warning('新密码不能与原密码相同')
+    return
+  }
+  notifyUserOperationChanged()
   changingPassword.value = true
   try {
     const response = await userApi.changeCurrentPassword(passwordForm)

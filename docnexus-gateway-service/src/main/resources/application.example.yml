@@ -4,6 +4,8 @@ server:
 spring:
   application:
     name: docnexus-gateway-service
+  main:
+    web-application-type: reactive
   data:
     redis:
       host: ${REDIS_HOST:127.0.0.1}
@@ -44,8 +46,23 @@ spring:
               uri: lb://docnexus-document-service
               predicates:
                 - Path=/api/documents/**
+            - id: docnexus-log-service
+              uri: lb://docnexus-log-service
+              predicates:
+                - Path=/api/logs/**
+    sentinel:
+      transport:
+        dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8858}
+        port: ${SENTINEL_TRANSPORT_PORT:8719}
+
+rocketmq:
+  name-server: ${ROCKETMQ_NAMESRV_ADDR:127.0.0.1:9876}
+  producer:
+    group: ${GATEWAY_ROCKETMQ_PRODUCER_GROUP:docnexus-gateway-producer-group}
 
 docnexus:
+  # Gateway 本地鉴权缓存：普通接口短时间内复用验签和 Redis 登录态校验结果。
+  # 强校验路径仍然绕过本地缓存，保证改密、退出、上传等高风险操作实时校验 Redis。
   gateway-auth-cache:
     enabled: ${GATEWAY_AUTH_CACHE_ENABLED:true}
     ttl-ms: ${GATEWAY_AUTH_CACHE_TTL_MS:3000}
@@ -57,17 +74,110 @@ docnexus:
       - /api/files/upload
       - /api/files/multipart/**
       - /api/files/uploads/**
+
+  # Gateway 只验签，不签发 JWT。JWKS 推荐走 Nacos 服务名：
+  # http://docnexus-user-service/internal/auth/jwks
+  # 本地不启 Nacos 时可临时改为：http://127.0.0.1:8101/internal/auth/jwks
   jwt:
     issuer: ${JWT_ISSUER:docnexus-cloud}
     clock-skew-seconds: ${JWT_CLOCK_SKEW_SECONDS:60}
     public-cert:
       location: ${JWT_PUBLIC_CERT_LOCATION:classpath:jwt-public.cer}
+    jwks:
+      enabled: ${JWT_JWKS_ENABLED:true}
+      uri: ${JWT_JWKS_URI:http://docnexus-user-service/internal/auth/jwks}
+      cache-ttl-seconds: ${JWT_JWKS_CACHE_TTL_SECONDS:300}
+      caffeine-max-size: ${JWT_JWKS_CAFFEINE_MAX_SIZE:16}
+      redis-cache-enabled: ${JWT_JWKS_REDIS_CACHE_ENABLED:true}
+      redis-cache-key: ${JWT_JWKS_REDIS_CACHE_KEY:docnexus:gateway:jwks}
+      redis-cache-ttl-seconds: ${JWT_JWKS_REDIS_CACHE_TTL_SECONDS:1800}
+      refresh-on-unknown-kid: ${JWT_JWKS_REFRESH_ON_UNKNOWN_KID:true}
+      unknown-kid-refresh-interval-seconds: ${JWT_JWKS_UNKNOWN_KID_REFRESH_INTERVAL_SECONDS:30}
     white-list:
       - /api/auth/login
       - /api/auth/register
       - /api/auth/refresh
       - /api/auth/password/recovery/**
       - /actuator/**
+
+  gateway:
+    # Gateway 与下游服务共享的内部签名密钥，用于 X-Gateway-Signature。
+    # 生产环境必须通过 Secret / 环境变量注入，不能使用默认值。
+    trusted-header:
+      sign-secret: ${GATEWAY_INTERNAL_SIGN_SECRET:change-me-in-production}
+
+    # CORS 只在 Gateway 配置。当前 accessToken 走 Authorization Header，
+    # 不使用 Cookie 作为认证凭证，因此 allow-credentials 默认 false 更安全。
+    cors:
+      enabled: ${GATEWAY_CORS_ENABLED:true}
+      allowed-origins:
+        - "http://127.0.0.1:5173"
+        - "http://localhost:5173"
+        - "http://127.0.0.1:5181"
+        - "http://localhost:5181"
+      allowed-methods:
+        - GET
+        - POST
+        - PUT
+        - PATCH
+        - DELETE
+        - OPTIONS
+      allowed-headers:
+        - Authorization
+        - Content-Type
+        - X-Requested-With
+        - X-Client-Version
+        - X-Trace-Id
+      exposed-headers:
+        - Authorization
+        - X-Request-Id
+        - X-Trace-Id
+      allow-credentials: false
+      max-age-seconds: 3600
+
+    # Redis 分布式限流默认关闭。生产开启后，登录/refresh 按 IP，
+    # 上传和普通业务接口按 userId 或 userId/IP 维度做多实例共享限流。
+    redis-rate-limit:
+      enabled: ${GATEWAY_REDIS_RATE_LIMIT_ENABLED:false}
+      fail-open: ${GATEWAY_REDIS_RATE_LIMIT_FAIL_OPEN:true}
+      rules:
+        login:
+          enabled: true
+          path-pattern: /api/auth/login
+          key-type: IP
+          limit: ${GATEWAY_LOGIN_RATE_LIMIT:60}
+          window-seconds: 60
+        refresh:
+          enabled: true
+          path-pattern: /api/auth/refresh
+          key-type: IP
+          limit: ${GATEWAY_REFRESH_RATE_LIMIT:20}
+          window-seconds: 60
+        upload:
+          enabled: true
+          path-pattern: /api/files/**
+          key-type: USER
+          limit: ${GATEWAY_UPLOAD_RATE_LIMIT:30}
+          window-seconds: 60
+        default-api:
+          enabled: true
+          path-pattern: /api/**
+          key-type: USER_OR_IP
+          limit: ${GATEWAY_API_RATE_LIMIT:300}
+          window-seconds: 60
+
+    # Sentinel 默认接入，不在代码里硬编码强限流规则。
+    # 生产可通过 Dashboard / 配置中心下发 route 或 API group 规则。
+    sentinel:
+      enabled: ${GATEWAY_SENTINEL_ENABLED:true}
+      dashboard: ${SENTINEL_DASHBOARD:127.0.0.1:8858}
+      transport-port: ${SENTINEL_TRANSPORT_PORT:8719}
+
+    # 网关审计和安全告警事件投递到 RocketMQ，由 log-service 异步落库。
+    audit:
+      enabled: ${GATEWAY_AUDIT_ENABLED:true}
+      topic: ${GATEWAY_AUDIT_TOPIC:docnexus_gateway_event}
+      producer-group: ${GATEWAY_AUDIT_PRODUCER_GROUP:docnexus-gateway-audit-producer-group}
 
 management:
   endpoints:
@@ -78,4 +188,3 @@ management:
 logging:
   level:
     com.xyf.docnexus.gateway: info
-

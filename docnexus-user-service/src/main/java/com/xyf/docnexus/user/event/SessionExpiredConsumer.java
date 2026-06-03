@@ -1,5 +1,6 @@
 package com.xyf.docnexus.user.event;
 
+import com.xyf.docnexus.common.log.BusinessOperationLog;
 import com.xyf.docnexus.user.Mapper.SessionMapper;
 import com.xyf.docnexus.user.entity.UserSessionLogoutParam;
 import org.apache.rocketmq.spring.annotation.RocketMQMessageListener;
@@ -39,6 +40,8 @@ public class SessionExpiredConsumer implements RocketMQListener<SessionExpiredEv
      * 消费会话失效事件，并幂等更新 MySQL。
      */
     @Override
+    @BusinessOperationLog(module = "用户中心", functionName = "会话失效落库", operationType = "MQ_CONSUME",
+            operationName = "消费会话失效事件", triggerType = "MQ_CONSUME", operationSource = "MQ", userVisible = false)
     public void onMessage(SessionExpiredEvent event) {
         validateEvent(event);
 

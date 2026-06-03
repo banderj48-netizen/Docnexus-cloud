@@ -3,17 +3,27 @@
  */
 import request from '../utils/request'
 
-const NORMAL_UPLOAD_LIMIT = 20 * 1024 * 1024
-const MAX_UPLOAD_LIMIT = 100 * 1024 * 1024
+const NORMAL_UPLOAD_LIMIT = 100 * 1024 * 1024
+const MAX_UPLOAD_LIMIT = 200 * 1024 * 1024
 const CHUNK_SIZE = 10 * 1024 * 1024
+
+/**
+ * 主动检查上传是否已被页面离开或用户取消中止，避免继续上传后续分片。
+ */
+const throwIfUploadAborted = (signal) => {
+    if (!signal?.aborted) return
+    const error = new Error('上传已中止')
+    error.name = 'AbortError'
+    throw error
+}
 
 export const fileApi = {
     /**
      * 获取文件列表 (支持分页)
      * @param {Object} params { page: 1, size: 10, sortBy: 'createTime', direction: 'desc' }
      */
-    getFileList: (params) => {
-        return request.get('/files/list', { params })
+    getFileList: (params, config = {}) => {
+        return request.get('/files/list', { ...config, params })
     },
 
     /**
@@ -39,15 +49,19 @@ export const fileApi = {
      */
     upload: (rawFile, options = {}) => {
         if (rawFile.size > MAX_UPLOAD_LIMIT) {
-            return Promise.reject(new Error('单个文件最大只能上传 100MB'))
+            return Promise.reject(new Error('单个文件最大只能上传 200MB'))
         }
         if (rawFile.size > NORMAL_UPLOAD_LIMIT) {
             return fileApi.uploadByChunks(rawFile, options)
         }
         const formData = new FormData()
         formData.append('file', rawFile)
+        if (options.knowledgeBaseId) {
+            formData.append('knowledgeBaseId', options.knowledgeBaseId)
+        }
 
         return request.post('/files/upload', formData, {
+            signal: options.signal,
             // 更加健壮的进度条监听
             onUploadProgress: (progressEvent) => {
                 // 如果后端没返回总大小，我们设为 0
@@ -72,22 +86,36 @@ export const fileApi = {
      */
     uploadByChunks: async (rawFile, options = {}) => {
         if (rawFile.size > MAX_UPLOAD_LIMIT) {
-            throw new Error('单个文件最大只能上传 100MB')
+            throw new Error('单个文件最大只能上传 200MB')
         }
-        const totalChunks = Math.ceil(rawFile.size / CHUNK_SIZE)
-        const initRes = await request.post('/files/chunk/init', {
-            fileName: rawFile.name,
-            fileSize: rawFile.size,
-            fileType: rawFile.type || rawFile.name.split('.').pop() || 'unknown',
-            chunkSize: CHUNK_SIZE,
-            totalChunks
-        })
+        let totalChunks = Math.ceil(rawFile.size / CHUNK_SIZE)
+        let uploadId = options.uploadId || ''
+        let uploadedSet = new Set(options.uploadedChunks || [])
 
-        const uploadId = initRes.data.uploadId
-        const uploadedSet = new Set(initRes.data.uploadedChunks || [])
+        throwIfUploadAborted(options.signal)
+        if (!uploadId) {
+            const initRes = await request.post('/files/multipart/init', {
+                fileName: rawFile.name,
+                fileSize: rawFile.size,
+                mimeType: rawFile.type || 'application/octet-stream',
+                chunkSize: CHUNK_SIZE,
+                totalChunks,
+                knowledgeBaseId: options.knowledgeBaseId || 'default'
+            }, { signal: options.signal })
+            uploadId = initRes.data.uploadId
+            totalChunks = initRes.data.totalChunks || totalChunks
+            uploadedSet = new Set(initRes.data.uploadedChunks || [])
+            options.onSession?.({ uploadId, totalChunks, chunkSize: CHUNK_SIZE })
+        } else {
+            const statusRes = await fileApi.getChunkStatus(uploadId, { signal: options.signal })
+            totalChunks = statusRes.data.totalChunks || totalChunks
+            uploadedSet = new Set(statusRes.data.uploadedChunkIndexes || options.uploadedChunks || [])
+            options.onSession?.({ uploadId, totalChunks, chunkSize: CHUNK_SIZE })
+        }
         const mode = 'chunk'
 
         for (let index = 0; index < totalChunks; index += 1) {
+            throwIfUploadAborted(options.signal)
             if (uploadedSet.has(index)) {
                 options.onProgress?.({
                     file: rawFile,
@@ -106,7 +134,8 @@ export const fileApi = {
             formData.append('chunkIndex', String(index))
             formData.append('chunk', rawFile.slice(start, end), rawFile.name + `.part${index}`)
 
-            await request.post('/files/chunk/upload', formData, {
+            await request.post('/files/multipart/chunk', formData, {
+                signal: options.signal,
                 timeout: 300000,
                 onUploadProgress: (progressEvent) => {
                     const chunkLoaded = progressEvent.loaded || 0
@@ -131,7 +160,8 @@ export const fileApi = {
             mode: 'merge'
         })
 
-        const completeRes = await request.post('/files/chunk/complete', { uploadId }, { timeout: 600000 })
+        throwIfUploadAborted(options.signal)
+        const completeRes = await request.post('/files/multipart/complete', { uploadId }, { signal: options.signal, timeout: 600000 })
         options.onProgress?.({
             file: rawFile,
             percent: 100,
@@ -142,8 +172,46 @@ export const fileApi = {
         return completeRes
     },
 
-    getChunkStatus: (uploadId) => {
-        return request.get(`/files/chunk/status/${uploadId}`)
+    getChunkStatus: (uploadId, config = {}) => {
+        return request.get(`/files/multipart/status/${uploadId}`, config)
+    },
+
+    /**
+     * 取消分片上传或失败上传临时项
+     * @param {String} uploadId 上传会话 ID
+     */
+    cancelUpload: (uploadId) => {
+        return request.post(`/files/multipart/cancel/${uploadId}`)
+    },
+
+    /**
+     * 丢弃本轮失败上传项
+     * @param {Array<String>} uploadIds 上传会话 ID
+     */
+    discardFailedUploads: (uploadIds = []) => {
+        return request.post('/files/uploads/discard-failed', { uploadIds })
+    },
+
+    /**
+     * 页面离开时标记上传中断并清理失败项
+     * @param {Array<String>} uploadIds 需要标记为中断的上传会话
+     */
+    interruptUploads: (uploadIds = []) => {
+        return request.post('/files/uploads/interrupt', { uploadIds })
+    },
+
+    /**
+     * 查询可恢复上传会话
+     */
+    getRecoverableUploads: () => {
+        return request.get('/files/uploads/recoverable')
+    },
+
+    /**
+     * 清理当前用户失败上传项
+     */
+    clearFailedUploads: () => {
+        return request.post('/files/uploads/clear-failed')
     },
 
     /**

@@ -81,28 +81,41 @@
                 <span>进度</span>
                 <span>操作</span>
               </div>
-              <div v-for="file in filteredQueueFiles" :key="file.id" class="table-row">
+              <div v-for="file in filteredQueueFiles" :key="file.id" class="table-row" :class="[`queue-${file.status}`]">
                 <span class="file-cell">
                   <i :class="['file-type', file.type.toLowerCase()]">{{ file.type }}</i>
-                  <strong>{{ file.name }}</strong>
+                  <span class="file-copy">
+                    <strong>{{ file.name }}</strong>
+                    <small v-if="file.errorMessage">{{ file.errorMessage }}</small>
+                  </span>
                 </span>
                 <span>{{ file.size }}</span>
                 <span>{{ file.time }}</span>
                 <span>
                   <em class="status-pill" :class="file.statusTone">{{ file.stage }}</em>
                 </span>
-                <span class="progress-cell">
+                <span class="progress-cell" :class="file.status">
                   <strong>{{ file.progress }}%</strong>
                   <i><b :style="{ width: `${file.progress}%` }"></b></i>
                 </span>
                 <span class="row-actions">
+                  <template v-if="file.status === 'failed'">
+                    <button class="text-action primary" type="button" title="重新上传" @click="retryQueueFile(file)">重新上传</button>
+                    <button class="text-action danger" type="button" title="取消" @click="cancelQueueFile(file)">取消</button>
+                  </template>
+                  <template v-else-if="file.status === 'interrupted'">
+                    <button class="text-action primary" type="button" title="继续上传" @click="continueInterruptedUpload(file)">继续上传</button>
+                    <button class="text-action danger" type="button" title="取消" @click="cancelQueueFile(file)">取消</button>
+                  </template>
+                  <template v-else>
                   <button type="button" :title="file.paused ? '继续处理' : '暂停处理'">
                     <VideoPlay v-if="file.paused" />
                     <VideoPause v-else />
                   </button>
-                  <button type="button" title="取消任务">
+                  <button type="button" title="取消任务" @click="cancelQueueFile(file)">
                     <Close />
                   </button>
+                  </template>
                 </span>
               </div>
             </div>
@@ -137,14 +150,14 @@
                   {{ file.graph }}
                 </span>
                 <span class="row-actions">
-                  <button type="button" title="预览文档"><View /></button>
-                  <button type="button" title="下载文档"><Download /></button>
+                  <button type="button" title="预览文档" @click="previewFile(file)"><View /></button>
+                  <button type="button" title="下载文档" @click="downloadFile(file)"><Download /></button>
                   <button type="button" title="更多操作"><MoreFilled /></button>
                 </span>
               </div>
             </div>
             <footer class="table-footer">
-              <span>共 {{ libraryFiles.length }} 条</span>
+              <span>共 {{ libraryTotal }} 条</span>
               <button type="button" disabled><ArrowLeft /></button>
               <button class="page-current" type="button">1</button>
               <button type="button"><ArrowRight /></button>
@@ -235,8 +248,11 @@
 </template>
 
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import StudioLayout from '../components/StudioLayout.vue'
+import { fileApi } from '../api/file'
+import { STORAGE_KEYS } from '../constants'
+import { notifyUserOperationChanged } from '../utils/sidebarStats'
 import {
   Aim,
   ArrowLeft,
@@ -261,19 +277,25 @@ import {
   VideoPlay,
   View,
 } from '@element-plus/icons-vue'
-import { ElMessage, ElMessageBox } from 'element-plus'
+import { ElMessage } from 'element-plus'
 
 const fileInputRef = ref(null)
 const activeQueueFilter = ref('all')
-const maxFileSize = 100 * 1024 * 1024
-const multipartThreshold = 50 * 1024 * 1024
-const simulatedUploadDelay = 720
+const libraryTotal = ref(0)
+const uploading = ref(false)
+const failedUploads = ref([])
+const pendingRecoverRow = ref(null)
+const maxFileSize = 200 * 1024 * 1024
+const multipartThreshold = 100 * 1024 * 1024
+const uploadDraftStorageKey = 'docnexus:file:upload:drafts'
 const supportedExtensions = new Set([
   'pdf',
   'doc',
   'docx',
   'ppt',
   'pptx',
+  'xls',
+  'xlsx',
   'txt',
   'jpg',
   'jpeg',
@@ -287,34 +309,26 @@ const supportedExtensions = new Set([
 
 const queueFilters = [
   { label: '全部', value: 'all' },
+  { label: '上传中', value: 'uploading' },
   { label: '待解析', value: 'waiting' },
   { label: '解析中', value: 'parsing' },
   { label: '已完成', value: 'done' },
+  { label: '失败', value: 'failed' },
 ]
 
-const metrics = [
-  { label: '资料总数', value: '128', desc: '已纳入统一管理的文档', icon: Folder, tone: 'green' },
-  { label: '解析中任务', value: '6', desc: 'Agent 正在处理的文档', icon: Operation, tone: 'blue' },
-  { label: '知识库切片', value: '18,420', desc: '已完成向量化的知识片段', icon: Files, tone: 'purple' },
-  { label: '图谱实体 / 关系', value: '4,860 / 12,340', desc: '已抽取实体与关联', icon: Share, tone: 'mint' },
-]
+const metrics = computed(() => {
+  const parsingCount = queueFiles.value.filter((file) => file.status === 'parsing').length
+  return [
+    { label: '资料总数', value: String(libraryTotal.value), desc: '已纳入统一管理的文档', icon: Folder, tone: 'green' },
+    { label: '解析中任务', value: String(parsingCount), desc: 'Agent 正在处理的文档', icon: Operation, tone: 'blue' },
+    { label: '知识库切片', value: '0', desc: '等待后续解析服务回写', icon: Files, tone: 'purple' },
+    { label: '图谱实体 / 关系', value: '0 / 0', desc: '等待后续图谱构建回写', icon: Share, tone: 'mint' },
+  ]
+})
 
-const queueFiles = ref([
-  { id: 1, name: '项目方案_v3.pdf', type: 'PDF', size: '12.4 MB', time: '06/01 10:18', stage: '等待解析', status: 'waiting', statusTone: 'blue', progress: 0, paused: false },
-  { id: 2, name: '产品需求说明书.docx', type: 'W', size: '2.1 MB', time: '06/01 10:15', stage: 'OCR / 文本抽取', status: 'parsing', statusTone: 'blue', progress: 64, paused: true },
-  { id: 3, name: '年度汇报PPT.pptx', type: 'P', size: '18.7 MB', time: '06/01 10:12', stage: '切片与向量化', status: 'parsing', statusTone: 'purple', progress: 82, paused: false },
-  { id: 4, name: '行业研究资料.pdf', type: 'PDF', size: '24.3 MB', time: '06/01 10:08', stage: '知识图谱构建', status: 'parsing', statusTone: 'orange', progress: 91, paused: false },
-  { id: 5, name: '用户访谈纪要.docx', type: 'W', size: '1.6 MB', time: '06/01 10:02', stage: '已完成', status: 'done', statusTone: 'green', progress: 100, paused: true },
-])
+const queueFiles = ref([])
 
-const libraryFiles = ref([
-  { id: 1, name: '市场分析报告_2024.pdf', type: 'PDF', time: '05/31 17:42', status: '已完成', statusTone: 'green', knowledge: '已入库', knowledgeTone: 'ready', graph: '已构建', graphTone: 'ready' },
-  { id: 2, name: '产品白皮书_v2.docx', type: 'W', time: '05/31 16:21', status: '在线处理', statusTone: 'blue', knowledge: '处理中', knowledgeTone: 'running', graph: '处理中', graphTone: 'running' },
-  { id: 3, name: '客户案例集.pptx', type: 'P', time: '05/31 15:08', status: '已完成', statusTone: 'green', knowledge: '已入库', knowledgeTone: 'ready', graph: '已构建', graphTone: 'ready' },
-  { id: 4, name: '需求草图.png', type: 'IMG', time: '05/31 14:33', status: '待复核', statusTone: 'orange', knowledge: '已入库', knowledgeTone: 'ready', graph: '待构建', graphTone: 'waiting' },
-  { id: 5, name: '行业标准汇编.pdf', type: 'PDF', time: '05/31 11:57', status: '已完成', statusTone: 'green', knowledge: '已入库', knowledgeTone: 'ready', graph: '已构建', graphTone: 'ready' },
-  { id: 6, name: '会议纪要_05-28.txt', type: 'TXT', time: '05/30 20:14', status: '已完成', statusTone: 'green', knowledge: '已入库', knowledgeTone: 'ready', graph: '已构建', graphTone: 'ready' },
-])
+const libraryFiles = ref([])
 
 const graphNodes = [
   { label: '产品', x: 230, y: 130, color: '#008d72', main: true },
@@ -352,6 +366,33 @@ const filteredQueueFiles = computed(() => {
   return queueFiles.value.filter((file) => file.status === activeQueueFilter.value)
 })
 
+onMounted(() => {
+  loadFileList()
+  window.addEventListener('beforeunload', handlePageUnload)
+})
+
+onBeforeUnmount(() => {
+  window.removeEventListener('beforeunload', handlePageUnload)
+})
+
+/**
+ * 从后端加载已上传文档，并同步生成“待解析”处理队列。
+ */
+const loadFileList = async () => {
+  const response = await fileApi.getFileList({ pageNum: 1, pageSize: 10, knowledgeBaseId: 'default' })
+  const page = response.data || {}
+  const records = (page.records || []).map(normalizeBackendFile)
+  const uploadedFiles = records.filter((file) => file.uploadStatus === 'UPLOADED')
+  const temporaryFiles = records.filter((file) => file.uploadStatus && file.uploadStatus !== 'UPLOADED')
+  libraryFiles.value = uploadedFiles
+  libraryTotal.value = Number(page.total || libraryFiles.value.length)
+  queueFiles.value = temporaryFiles
+    .map(createQueueRowFromLibrary)
+    .concat(uploadedFiles
+    .filter((file) => ['待解析', '解析中', '上传中', '待上传', '上传失败'].includes(file.knowledge) || file.status === '上传失败')
+    .map(createQueueRowFromLibrary))
+}
+
 /**
  * 打开浏览器文件选择器，后续接入后端上传接口时仍复用该入口。
  */
@@ -365,34 +406,40 @@ const openFilePicker = () => {
 const handleFileChange = (event) => {
   const files = Array.from(event.target.files || [])
   if (!files.length) return
-  files.forEach((file, index) => {
-    window.setTimeout(() => startUploadPreview(file), index * 120)
-  })
+  if (pendingRecoverRow.value) {
+    continueUploadWithSelectedFile(pendingRecoverRow.value, files[0])
+    pendingRecoverRow.value = null
+    event.target.value = ''
+    return
+  }
+  enqueueUploadFiles(files)
   event.target.value = ''
 }
 
 /**
- * 创建上传中的文档行，并在前端模拟后端上传成功后的状态流转。
+ * 将批量选择的文件按顺序逐个上传，避免同时把大文件请求打到后端。
  */
-const startUploadPreview = async (file) => {
-  const invalidReason = validateUploadFile(file)
-  if (invalidReason) {
-    await showUploadFailureDialog({ file, reason: invalidReason })
+const enqueueUploadFiles = async (files) => {
+  if (uploading.value) {
+    ElMessage.warning('已有文件正在上传，请稍后再试')
     return
   }
-
-  const uploadMode = file.size > multipartThreshold ? 'multipart' : 'normal'
-  const uploadId = `upload_${Date.now()}_${Math.random().toString(16).slice(2)}`
-  const fileId = `file_${Date.now()}_${Math.random().toString(16).slice(2)}`
-  const row = createLibraryUploadRow(file, uploadId, fileId, uploadMode)
-  libraryFiles.value = [row, ...libraryFiles.value]
+  uploading.value = true
+  failedUploads.value = []
 
   try {
-    await simulateUpload(file, row, uploadMode)
-    markUploadSuccess(row, file)
-    ElMessage.success(`${file.name} 已上传成功，已加入处理队列`)
-  } catch (error) {
-    await showUploadFailureDialog({ file, row, reason: error?.message || '上传失败，请稍后重试' })
+    for (const file of files) {
+      const invalidReason = validateUploadFile(file)
+      if (invalidReason) {
+        failedUploads.value.push({ file, reason: invalidReason })
+        continue
+      }
+      notifyUserOperationChanged()
+      await uploadOneFile(file)
+    }
+  } finally {
+    uploading.value = false
+    await loadFileList()
   }
 }
 
@@ -408,17 +455,62 @@ const validateUploadFile = (file) => {
     return '不能上传空文件'
   }
   if (file.size > maxFileSize) {
-    return '单个文件不能超过 100MB'
+    return '单个文件不能超过 200MB'
   }
   return ''
 }
 
 /**
- * 生成上传中的文档库行，真实联调时可替换为后端返回的文件快照。
+ * 上传单个文件，并把进度实时写入当前页面的临时行。
  */
-const createLibraryUploadRow = (file, uploadId, fileId, uploadMode) => ({
-  id: fileId,
-  uploadId,
+const uploadOneFile = async (file) => {
+  const uploadMode = file.size > multipartThreshold ? 'multipart' : 'normal'
+  const row = createLocalUploadRow(file, uploadMode)
+  queueFiles.value = [createQueueRowFromLibrary(row), ...queueFiles.value]
+
+  try {
+    const response = await fileApi.upload(file, {
+      knowledgeBaseId: 'default',
+      onSession: ({ uploadId, totalChunks, chunkSize }) => {
+        row.uploadId = uploadId
+        row.totalChunks = totalChunks
+        row.chunkSize = chunkSize
+        saveUploadDraft(row, file)
+        syncQueueRow(row)
+      },
+      onProgress: ({ percent, mode }) => {
+        row.progress = percent
+        row.status = mode === 'merge' ? '合并中' : uploadMode === 'multipart' ? '分片上传中' : '上传中'
+        row.uploadStatus = mode === 'merge' ? 'COMPLETING' : 'UPLOADING'
+        syncQueueRow(row)
+      }
+    })
+    row.uploadId = response.data?.uploadId || row.uploadId
+    const uploaded = normalizeBackendFile(response.data?.file)
+    libraryFiles.value = [uploaded, ...libraryFiles.value]
+    libraryTotal.value += 1
+    queueFiles.value = [createQueueRowFromLibrary(uploaded), ...queueFiles.value.filter((item) => item.localId !== row.id && item.uploadId !== row.uploadId)]
+    removeUploadDraft(row.uploadId)
+    ElMessage.success(`${file.name} 已上传成功`)
+  } catch (error) {
+    row.status = '上传失败'
+    row.uploadStatus = 'UPLOAD_FAILED'
+    row.statusTone = 'red'
+    row.progress = 0
+    row.errorMessage = error?.message || '上传失败，请稍后重试'
+    syncQueueRow(row)
+    failedUploads.value.push({ file, row, reason: row.errorMessage })
+  }
+}
+
+/**
+ * 生成本地上传临时行。
+ */
+const createLocalUploadRow = (file, uploadMode) => ({
+  id: `local_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+  fileId: '',
+  uploadId: '',
+  uploadStatus: uploadMode === 'multipart' ? 'UPLOADING' : 'UPLOADING',
   name: file.name,
   type: resolveFileType(file.name),
   size: formatFileSize(file.size),
@@ -429,78 +521,338 @@ const createLibraryUploadRow = (file, uploadId, fileId, uploadMode) => ({
   knowledgeTone: 'waiting',
   graph: '待解析',
   graphTone: 'waiting',
+  progress: 0,
+  originalFile: file,
+  lastModified: file.lastModified,
+  fileSize: file.size,
+  uploadMode,
 })
 
 /**
- * 在无后端阶段模拟普通上传和分片上传进度，保留后续真实接口接入点。
+ * 基于已上传文档生成处理队列行。
  */
-const simulateUpload = (file, row, uploadMode) => new Promise((resolve) => {
-  const chunkCount = uploadMode === 'multipart' ? Math.ceil(file.size / (5 * 1024 * 1024)) : 1
-  const delay = uploadMode === 'multipart'
-    ? Math.min(simulatedUploadDelay + chunkCount * 80, 2200)
-    : simulatedUploadDelay
-
-  window.setTimeout(() => resolve(row), delay)
-})
-
-/**
- * 把上传成功的文档行转为“已上传”，并追加到处理队列。
- */
-const markUploadSuccess = (row, file) => {
-  row.status = '已上传'
-  row.statusTone = 'green'
-  row.knowledge = '待解析'
-  row.knowledgeTone = 'waiting'
-  row.graph = '待解析'
-  row.graphTone = 'waiting'
-  queueFiles.value = [createQueueRow(row, file), ...queueFiles.value].slice(0, 8)
-}
-
-/**
- * 基于已上传文档生成处理队列行，确保队列只展示上传成功文件。
- */
-const createQueueRow = (row, file) => ({
+const createQueueRowFromLibrary = (row) => ({
   id: `task_${row.id}`,
+  localId: row.id,
   fileId: row.id,
   uploadId: row.uploadId,
+  uploadStatus: row.uploadStatus,
   name: row.name,
   type: row.type,
-  size: row.size || formatFileSize(file.size),
+  size: row.size,
   time: row.time,
-  stage: '等待解析',
-  status: 'waiting',
-  statusTone: 'blue',
-  progress: 0,
+  stage: resolveQueueStage(row),
+  status: resolveQueueStatus(row),
+  statusTone: row.statusTone,
+  progress: row.progress || 0,
+  errorMessage: row.errorMessage || '',
+  originalFile: row.originalFile,
+  fileSize: row.fileSize,
+  lastModified: row.lastModified,
+  totalChunks: row.totalChunks,
+  chunkSize: row.chunkSize,
   paused: false,
 })
 
 /**
- * 展示上传失败处理弹窗，取消时清理页面中的文件和预留的 Redis 清理入口。
+ * 根据文档状态解析队列阶段。
  */
-const showUploadFailureDialog = async ({ file, row, reason }) => {
-  try {
-    await ElMessageBox.confirm(`${file.name} 上传失败：${reason}`, '上传失败', {
-      confirmButtonText: '重新上传',
-      cancelButtonText: '取消',
-      type: 'warning',
-      distinguishCancelAndClose: true,
-    })
+const resolveQueueStage = (row) => {
+  if (row.uploadStatus === 'UPLOAD_FAILED' || row.status === '上传失败') return '处理失败'
+  if (row.uploadStatus === 'INTERRUPTED' || row.status === '上传中断') return '上传中断'
+  if (row.status !== '已上传' && (row.status.includes('上传') || row.status === '合并中')) return row.status
+  if (row.knowledge === '解析中') return '解析中'
+  if (row.knowledge === '已入库') return '已完成'
+  return '待解析'
+}
+
+/**
+ * 根据文档状态解析队列筛选状态。
+ */
+const resolveQueueStatus = (row) => {
+  if (row.uploadStatus === 'UPLOAD_FAILED' || row.status === '上传失败') return 'failed'
+  if (row.uploadStatus === 'INTERRUPTED' || row.status === '上传中断') return 'interrupted'
+  if (row.status !== '已上传' && (row.status.includes('上传') || row.status === '合并中')) return 'uploading'
+  if (row.knowledge === '解析中') return 'parsing'
+  if (row.knowledge === '已入库') return 'done'
+  return 'waiting'
+}
+
+/**
+ * 把后端文件展示对象转换为当前页面表格字段。
+ */
+const normalizeBackendFile = (file = {}) => ({
+  id: file.fileId || file.id || file.uploadId,
+  fileId: file.fileId || file.id || '',
+  uploadId: file.uploadId || '',
+  uploadStatus: file.uploadStatus || 'UPLOADED',
+  name: file.name || file.originalName || '未命名文档',
+  type: file.type || resolveFileType(file.name || file.originalName || ''),
+  size: file.sizeText || formatFileSize(file.fileSize),
+  time: file.timeText || '刚刚',
+  status: file.statusText || resolveUploadStatusText(file.uploadStatus),
+  statusTone: file.statusTone || resolveStatusTone(file.uploadStatus),
+  knowledge: file.knowledgeText || resolveKnowledgeText(file.parseStatus),
+  knowledgeTone: file.knowledgeTone || resolveKnowledgeTone(file.parseStatus),
+  graph: file.graphText || resolveGraphText(file.graphStatus),
+  graphTone: file.graphTone || resolveGraphTone(file.graphStatus),
+  progress: Number(file.progress || 0),
+  errorMessage: file.errorMessage || '',
+  fileSize: Number(file.fileSize || 0),
+})
+
+/**
+ * 替换本地上传临时行。
+ */
+const replaceLibraryRow = (localId, uploaded) => {
+  libraryFiles.value = libraryFiles.value.map((item) => item.id === localId ? uploaded : item)
+}
+
+/**
+ * 同步上传临时行到处理队列。
+ */
+const syncQueueRow = (row) => {
+  const nextRow = createQueueRowFromLibrary(row)
+  queueFiles.value = queueFiles.value.map((item) => item.fileId === row.id ? nextRow : item)
+}
+
+/**
+ * 重新上传失败队列行。
+ */
+const retryQueueFile = async (file) => {
+  if (!file.originalFile) {
+    ElMessage.warning('页面已刷新，请重新选择原文件上传')
+    pendingRecoverRow.value = file
     openFilePicker()
-  } catch (action) {
-    if (action === 'cancel' || action === 'close') {
-      cancelUploadPreview(row)
-      ElMessage.info('已取消上传，页面展示已清理')
-    }
+    return
+  }
+  await cancelQueueFile(file, false)
+  await enqueueUploadFiles([file.originalFile])
+}
+
+/**
+ * 继续上传中断队列行。
+ */
+const continueInterruptedUpload = (file) => {
+  pendingRecoverRow.value = file
+  ElMessage.info('请选择同一个本地文件继续上传')
+  openFilePicker()
+}
+
+/**
+ * 使用用户重新选择的文件恢复分片上传。
+ */
+const continueUploadWithSelectedFile = async (row, file) => {
+  if (!isSameRecoverFile(row, file)) {
+    ElMessage.error('请选择与中断任务相同的文件')
+    return
+  }
+  if (file.size <= multipartThreshold) {
+    await cancelQueueFile(row, false)
+    await enqueueUploadFiles([file])
+    return
+  }
+
+  uploading.value = true
+  row.originalFile = file
+  row.status = 'uploading'
+  row.stage = '上传中'
+  row.statusTone = 'blue'
+  row.errorMessage = ''
+  notifyUserOperationChanged()
+  try {
+    const statusResponse = await fileApi.getChunkStatus(row.uploadId)
+    const uploadedChunks = statusResponse.data?.uploadedChunkIndexes || []
+    const response = await fileApi.uploadByChunks(file, {
+      uploadId: row.uploadId,
+      uploadedChunks,
+      knowledgeBaseId: 'default',
+      onProgress: ({ percent, mode }) => {
+        row.progress = percent
+        row.stage = mode === 'merge' ? '合并中' : '分片上传中'
+        row.statusTone = 'blue'
+      }
+    })
+    const uploaded = normalizeBackendFile(response.data?.file)
+    libraryFiles.value = [uploaded, ...libraryFiles.value]
+    libraryTotal.value += 1
+    queueFiles.value = [createQueueRowFromLibrary(uploaded), ...queueFiles.value.filter((item) => item.uploadId !== row.uploadId)]
+    removeUploadDraft(row.uploadId)
+    ElMessage.success(`${file.name} 已继续上传完成`)
+  } catch (error) {
+    row.status = 'failed'
+    row.stage = '处理失败'
+    row.statusTone = 'red'
+    row.errorMessage = error?.message || '继续上传失败，请稍后重试'
+  } finally {
+    uploading.value = false
   }
 }
 
 /**
- * 取消上传时清理前端展示；后续接入后端后在这里调用 Redis 和临时分片清理接口。
+ * 取消失败或中断队列行。
  */
-const cancelUploadPreview = (row) => {
-  if (!row) return
-  libraryFiles.value = libraryFiles.value.filter((file) => file.id !== row.id)
-  queueFiles.value = queueFiles.value.filter((file) => file.fileId !== row.id)
+const cancelQueueFile = async (file, showMessage = true) => {
+  queueFiles.value = queueFiles.value.filter((item) => item.id !== file.id)
+  if (file.uploadId) {
+    removeUploadDraft(file.uploadId)
+  }
+  if (showMessage) {
+    ElMessage.success('已取消上传任务')
+  }
+}
+
+/**
+ * 判断用户重新选择的文件是否匹配中断任务。
+ */
+const isSameRecoverFile = (row, file) => {
+  return row.name === file.name && Number(row.fileSize || 0) === Number(file.size || 0)
+}
+
+/**
+ * 浏览器刷新或关闭时尽力发送中断通知。
+ */
+const handlePageUnload = () => {
+  const interruptedUploadIds = queueFiles.value
+    .filter((file) => ['uploading', 'interrupted'].includes(file.status) && file.uploadId)
+    .map((file) => file.uploadId)
+  if (!interruptedUploadIds.length) return
+  const token = localStorage.getItem(STORAGE_KEYS.ACCESS_TOKEN) || ''
+  const body = JSON.stringify({ uploadIds: interruptedUploadIds })
+  fetch('/api/files/uploads/interrupt', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+    body,
+    keepalive: true,
+  }).catch(() => {})
+}
+
+/**
+ * 保存上传草稿元数据，不保存文件内容。
+ */
+const saveUploadDraft = (row, file) => {
+  if (!row.uploadId) return
+  const drafts = readUploadDrafts()
+  drafts[row.uploadId] = {
+    uploadId: row.uploadId,
+    fileName: file.name,
+    fileSize: file.size,
+    lastModified: file.lastModified,
+    knowledgeBaseId: 'default',
+  }
+  localStorage.setItem(uploadDraftStorageKey, JSON.stringify(drafts))
+}
+
+/**
+ * 删除上传草稿。
+ */
+const removeUploadDraft = (uploadId) => {
+  if (!uploadId) return
+  const drafts = readUploadDrafts()
+  delete drafts[uploadId]
+  localStorage.setItem(uploadDraftStorageKey, JSON.stringify(drafts))
+}
+
+/**
+ * 读取上传草稿。
+ */
+const readUploadDrafts = () => {
+  try {
+    return JSON.parse(localStorage.getItem(uploadDraftStorageKey) || '{}')
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * 预览文档。
+ */
+const previewFile = async (file) => {
+  if (!file.fileId) return
+  notifyUserOperationChanged()
+  const blob = await fileApi.preview(file.fileId)
+  const url = window.URL.createObjectURL(blob)
+  window.open(url, '_blank', 'noopener')
+  window.setTimeout(() => window.URL.revokeObjectURL(url), 30000)
+}
+
+/**
+ * 下载文档。
+ */
+const downloadFile = async (file) => {
+  if (!file.fileId) return
+  notifyUserOperationChanged()
+  const blob = await fileApi.download(file.fileId)
+  const url = window.URL.createObjectURL(blob)
+  const link = document.createElement('a')
+  link.href = url
+  link.download = file.name
+  link.click()
+  window.URL.revokeObjectURL(url)
+}
+
+/**
+ * 解析上传状态文案。
+ */
+const resolveUploadStatusText = (status) => {
+  if (status === 'UPLOAD_FAILED') return '上传失败'
+  if (status === 'INTERRUPTED') return '上传中断'
+  if (status === 'UPLOADING') return '上传中'
+  if (status === 'PENDING_UPLOAD') return '待上传'
+  if (status === 'COMPLETING') return '合并中'
+  return '已上传'
+}
+
+/**
+ * 解析状态色调。
+ */
+const resolveStatusTone = (status) => {
+  if (status === 'UPLOAD_FAILED') return 'red'
+  if (status === 'INTERRUPTED') return 'amber'
+  return status === 'UPLOADED' ? 'green' : 'blue'
+}
+
+/**
+ * 解析知识库状态文案。
+ */
+const resolveKnowledgeText = (status) => {
+  if (status === 'PROCESSING') return '解析中'
+  if (status === 'SUCCESS') return '已入库'
+  if (status === 'FAILED') return '解析失败'
+  return '待解析'
+}
+
+/**
+ * 解析知识库状态色调。
+ */
+const resolveKnowledgeTone = (status) => {
+  if (status === 'PROCESSING') return 'running'
+  if (status === 'SUCCESS') return 'ready'
+  if (status === 'FAILED') return 'failed'
+  return 'waiting'
+}
+
+/**
+ * 解析图谱状态文案。
+ */
+const resolveGraphText = (status) => {
+  if (status === 'BUILDING') return '构建中'
+  if (status === 'SUCCESS') return '已构建'
+  if (status === 'FAILED') return '构建失败'
+  return '待解析'
+}
+
+/**
+ * 解析图谱状态色调。
+ */
+const resolveGraphTone = (status) => {
+  if (status === 'BUILDING') return 'running'
+  if (status === 'SUCCESS') return 'ready'
+  if (status === 'FAILED') return 'failed'
+  return 'waiting'
 }
 
 /**
@@ -1057,6 +1409,21 @@ const formatFileSize = (size) => {
   white-space: nowrap;
 }
 
+.file-copy {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.file-copy small {
+  overflow: hidden;
+  color: #dc2626;
+  font-size: 11px;
+  font-weight: 800;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .file-type {
   display: inline-grid;
   min-width: 18px;
@@ -1120,6 +1487,24 @@ const formatFileSize = (size) => {
   color: #d97706;
 }
 
+.status-pill.red {
+  background: #fff1f2;
+  color: #dc2626;
+}
+
+.status-pill.amber {
+  background: #fff7ed;
+  color: #b45309;
+}
+
+.queue-failed {
+  background: #fff7f7;
+}
+
+.queue-interrupted {
+  background: #fffbeb;
+}
+
 .progress-cell {
   display: grid;
   grid-template-columns: 42px minmax(0, 1fr);
@@ -1142,6 +1527,14 @@ const formatFileSize = (size) => {
   background: #00866d;
 }
 
+.progress-cell.failed b {
+  background: #dc2626;
+}
+
+.progress-cell.interrupted b {
+  background: #d97706;
+}
+
 .row-actions {
   gap: 14px;
 }
@@ -1152,6 +1545,26 @@ const formatFileSize = (size) => {
   height: 22px;
   place-items: center;
   color: #24324c;
+}
+
+.row-actions .text-action {
+  width: auto;
+  min-width: 54px;
+  height: 26px;
+  padding: 0 8px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 900;
+}
+
+.row-actions .text-action.primary {
+  background: #e8f5ff;
+  color: #0f67b1;
+}
+
+.row-actions .text-action.danger {
+  background: #fff1f2;
+  color: #dc2626;
 }
 
 .row-actions svg {

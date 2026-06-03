@@ -6,6 +6,7 @@ import com.auth0.jwt.algorithms.Algorithm;
 import com.auth0.jwt.exceptions.JWTVerificationException;
 import com.auth0.jwt.interfaces.DecodedJWT;
 import com.xyf.docnexus.gateway.config.GatewayJwtProperties;
+import com.xyf.docnexus.gateway.security.JwksCacheService;
 import org.springframework.core.io.Resource;
 import org.springframework.core.io.ResourceLoader;
 import org.springframework.stereotype.Component;
@@ -29,11 +30,15 @@ public class JwtVerifyTool {
 
     private final GatewayJwtProperties jwtProperties;
     private final ResourceLoader resourceLoader;
+    private final JwksCacheService jwksCacheService;
     private final JWTVerifier jwtVerifier;
 
-    public JwtVerifyTool(GatewayJwtProperties jwtProperties, ResourceLoader resourceLoader) {
+    public JwtVerifyTool(GatewayJwtProperties jwtProperties,
+                         ResourceLoader resourceLoader,
+                         JwksCacheService jwksCacheService) {
         this.jwtProperties = jwtProperties;
         this.resourceLoader = resourceLoader;
+        this.jwksCacheService = jwksCacheService;
         this.jwtVerifier = JWT.require(Algorithm.RSA256(loadPublicKey(), null))
                 .withIssuer(jwtProperties.getIssuer())
                 .acceptLeeway(jwtProperties.getClockSkewSeconds())
@@ -59,7 +64,7 @@ public class JwtVerifyTool {
      * 当本地缓存未命中时，再调用该方法执行真正的 RSA 验签。</p>
      */
     public UserTokenPayload verifyToken(String token) {
-        DecodedJWT decodedJWT = jwtVerifier.verify(token);
+        DecodedJWT decodedJWT = verifyWithJwksOrFallback(token);
 
         Long expiresAtMillis = decodedJWT.getClaim("expiresAtMillis").asLong();
         if (expiresAtMillis == null || System.currentTimeMillis() >= expiresAtMillis) {
@@ -80,6 +85,21 @@ public class JwtVerifyTool {
                 expiresAtMillis,
                 tokenVersion
         );
+    }
+
+    /**
+     * 优先使用 JWKS kid 验签，失败时回退到本地公钥证书。
+     */
+    private DecodedJWT verifyWithJwksOrFallback(String token) {
+        DecodedJWT unverified = JWT.decode(token);
+        String keyId = unverified.getKeyId();
+        return jwksCacheService.findPublicKey(keyId)
+                .map(publicKey -> JWT.require(Algorithm.RSA256(publicKey, null))
+                        .withIssuer(jwtProperties.getIssuer())
+                        .acceptLeeway(jwtProperties.getClockSkewSeconds())
+                        .build()
+                        .verify(token))
+                .orElseGet(() -> jwtVerifier.verify(token));
     }
 
     /**

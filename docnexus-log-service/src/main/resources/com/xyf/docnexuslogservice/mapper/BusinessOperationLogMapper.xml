@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xyf.docnexuslogservice.mapper.BusinessOperationLogMapper">
+
+    <insert id="insertIgnore" parameterType="com.xyf.docnexuslogservice.entity.BusinessOperationLog">
+        INSERT IGNORE INTO business_operation_log
+        (event_id, request_id, trace_id, user_id, username, source_service, module, function_name,
+         operation_type, operation_name, trigger_type, operation_source, user_visible, business_key,
+         success, alert_message, request_headers_json, method, path, client_ip, user_agent,
+         occurred_at, completed_at, duration_ms)
+        VALUES
+        (#{eventId}, #{requestId}, #{traceId}, #{userId}, #{username}, #{sourceService}, #{module}, #{functionName},
+         #{operationType}, #{operationName}, #{triggerType}, #{operationSource}, #{userVisible}, #{businessKey},
+         #{success}, #{alertMessage}, #{requestHeadersJson}, #{method}, #{path}, #{clientIp}, #{userAgent},
+         #{occurredAt}, #{completedAt}, #{durationMs})
+    </insert>
+
+    <select id="selectUserVisiblePage" resultType="com.xyf.docnexuslogservice.entity.BusinessOperationLog">
+        SELECT *
+        FROM business_operation_log
+        <where>
+            user_id = #{userId}
+            AND trigger_type = 'USER_ACTION'
+            AND user_visible = 1
+            AND occurred_at &gt;= #{since}
+            <if test="success != null">AND success = #{success}</if>
+            <if test="module != null and module != ''">AND module = #{module}</if>
+            <if test="functionName != null and functionName != ''">AND function_name = #{functionName}</if>
+        </where>
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+
+    <select id="countUserVisible" resultType="long">
+        SELECT COUNT(1)
+        FROM business_operation_log
+        <where>
+            user_id = #{userId}
+            AND trigger_type = 'USER_ACTION'
+            AND user_visible = 1
+            AND occurred_at &gt;= #{since}
+            <if test="success != null">AND success = #{success}</if>
+            <if test="module != null and module != ''">AND module = #{module}</if>
+            <if test="functionName != null and functionName != ''">AND function_name = #{functionName}</if>
+        </where>
+    </select>
+
+    <select id="countUserVisibleBySuccess" resultType="map">
+        SELECT IF(success = 1, 'SUCCESS', 'FAILED') AS name,
+               COUNT(1) AS value
+        FROM business_operation_log
+        WHERE user_id = #{userId}
+          AND trigger_type = 'USER_ACTION'
+          AND user_visible = 1
+          AND occurred_at &gt;= #{since}
+        GROUP BY success
+    </select>
+
+    <select id="countUserVisibleByFunction" resultType="map">
+        SELECT function_name AS name,
+               COUNT(1) AS value
+        FROM business_operation_log
+        WHERE user_id = #{userId}
+          AND trigger_type = 'USER_ACTION'
+          AND user_visible = 1
+          AND occurred_at &gt;= #{since}
+        GROUP BY function_name
+        ORDER BY value DESC
+    </select>
+</mapper>

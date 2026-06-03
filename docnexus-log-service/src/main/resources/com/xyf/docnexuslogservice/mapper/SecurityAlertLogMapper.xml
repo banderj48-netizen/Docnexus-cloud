@@ -1,0 +1,51 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xyf.docnexuslogservice.mapper.SecurityAlertLogMapper">
+
+    <insert id="insertIgnore" parameterType="com.xyf.docnexuslogservice.entity.SecurityAlertLog">
+        INSERT IGNORE INTO security_alert_log
+        (event_id, request_id, trace_id, alert_type, alert_level, user_id, client_ip, method, path,
+         message, detail_json, occurred_at)
+        VALUES
+        (#{eventId}, #{requestId}, #{traceId}, #{alertType}, #{alertLevel}, #{userId}, #{clientIp}, #{method}, #{path},
+         #{message}, #{detailJson}, #{occurredAt})
+    </insert>
+
+    <select id="selectPage" resultType="com.xyf.docnexuslogservice.entity.SecurityAlertLog">
+        SELECT *
+        FROM security_alert_log
+        <where>
+            <if test="alertType != null and alertType != ''">AND alert_type = #{alertType}</if>
+            <if test="handled != null">AND handled = #{handled}</if>
+        </where>
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+
+    <select id="count" resultType="long">
+        SELECT COUNT(1)
+        FROM security_alert_log
+        <where>
+            <if test="alertType != null and alertType != ''">AND alert_type = #{alertType}</if>
+            <if test="handled != null">AND handled = #{handled}</if>
+        </where>
+    </select>
+
+    <update id="markHandled">
+        UPDATE security_alert_log
+        SET handled = 1,
+            handled_at = NOW()
+        WHERE event_id = #{eventId}
+          AND handled = 0
+    </update>
+
+    <select id="countByAlertType" resultType="map">
+        SELECT alert_type AS name,
+               COUNT(1) AS value
+        FROM security_alert_log
+        GROUP BY alert_type
+        ORDER BY value DESC
+    </select>
+</mapper>

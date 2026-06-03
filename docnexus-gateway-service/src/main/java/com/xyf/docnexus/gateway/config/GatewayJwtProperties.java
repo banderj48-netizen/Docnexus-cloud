@@ -46,6 +46,13 @@ public class GatewayJwtProperties {
      */
     private PublicCert publicCert = new PublicCert();
 
+    /**
+     * JWKS 公钥集配置。
+     *
+     * <p>生产环境建议 Gateway 通过该地址拉取 UserService 暴露的公钥集，并根据 JWT Header 中的 kid 选择验签公钥。</p>
+     */
+    private Jwks jwks = new Jwks();
+
     @Data
     public static class PublicCert {
 
@@ -56,5 +63,60 @@ public class GatewayJwtProperties {
          * 生产环境可以通过环境变量指向统一下发的证书文件。</p>
          */
         private String location;
+    }
+
+    @Data
+    public static class Jwks {
+
+        /**
+         * 是否启用 JWKS 验签。
+         */
+        private Boolean enabled = true;
+
+        /**
+         * JWKS 内部地址。
+         */
+        private String uri;
+
+        /**
+         * 公钥集缓存 TTL，单位秒。
+         */
+        private Long cacheTtlSeconds = 300L;
+
+        /**
+         * Caffeine 按 kid 缓存的最大公钥数量。
+         */
+        private Long caffeineMaxSize = 16L;
+
+        /**
+         * 是否启用 Redis 二级缓存。
+         *
+         * <p>Gateway 多实例部署时，Redis 缓存可以避免每个实例都频繁访问 UserService JWKS 接口。</p>
+         */
+        private Boolean redisCacheEnabled = true;
+
+        /**
+         * Redis 中保存 JWKS 原始 JSON 的 key。
+         */
+        private String redisCacheKey = "docnexus:gateway:jwks";
+
+        /**
+         * Redis JWKS 缓存 TTL，单位秒。
+         *
+         * <p>该值可以略大于本地内存缓存 TTL；遇到未知 kid 时仍会按配置尝试远程刷新，保证密钥轮换可用。</p>
+         */
+        private Long redisCacheTtlSeconds = 1800L;
+
+        /**
+         * 遇到未知 kid 时是否立即刷新 JWKS。
+         */
+        private Boolean refreshOnUnknownKid = true;
+
+        /**
+         * 未知 kid 触发远程刷新时的最小间隔，单位秒。
+         *
+         * <p>该配置避免恶意或异常 token 携带随机 kid 时导致 Gateway 反复打 UserService。</p>
+         */
+        private Long unknownKidRefreshIntervalSeconds = 30L;
     }
 }

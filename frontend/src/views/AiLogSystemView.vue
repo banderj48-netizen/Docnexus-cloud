@@ -1,761 +1,699 @@
 <template>
   <StudioLayout>
-    <div class="ai-log-page">
-      <header class="feature-hero ai-log-hero">
+    <div class="user-log-page">
+      <header class="log-header">
         <div>
-          <span class="eyebrow">AI Logs</span>
-          <h1>AI 日志系统</h1>
-          <p>
-            记录当前用户每次 AI 调用的执行状态、召回资料、工具步骤、耗时和上下文窗口，
-            用于追踪 RAG 问答、摘要、关键词提取与引用检查过程。
-          </p>
+          <span class="eyebrow">User Logs</span>
+          <h1>用户日志</h1>
+          <p>最近 5 天由你主动发起的业务操作记录</p>
         </div>
-        <button v-if="!isAdminUser" class="primary-button" type="button" :disabled="loading" @click="loadLogs">
-          <Refresh />
-          {{ loading ? '刷新中' : '刷新日志' }}
+        <button class="refresh-button" type="button" :disabled="loading" @click="refreshAll(true)">
+          <el-icon><Refresh /></el-icon>
+          <span>{{ loading ? '刷新中' : '刷新' }}</span>
         </button>
       </header>
 
-      <section v-if="isAdminUser" class="surface admin-log-placeholder">
-        <Warning />
-        <div>
-          <h2>admin 日志系统暂不设计</h2>
-          <p>当前页面只面向普通用户展示自己的 AI 调用日志。管理员全局审计、跨用户检索和权限策略后续单独设计。</p>
+      <section class="summary-row">
+        <article class="summary-card total-card">
+          <span>主动操作</span>
+          <strong>{{ totalOperationCount }}</strong>
+          <p>仅统计用户点击或提交触发的功能</p>
+        </article>
+        <div class="summary-side">
+          <article class="summary-card mini success">
+            <span>成功</span>
+            <strong>{{ successCount }}</strong>
+            <p>成功完成并记录耗时的操作</p>
+          </article>
+          <article class="summary-card mini danger">
+            <span>失败</span>
+            <strong>{{ failedCount }}</strong>
+            <p>失败记录会展示简短告警信息</p>
+          </article>
         </div>
       </section>
 
-      <template v-else>
-        <section class="feature-grid three">
-          <article v-for="card in statCards" :key="card.label" class="feature-card">
-            <component :is="card.icon" />
-            <span>{{ card.label }}</span>
-            <strong>{{ card.value }}</strong>
-            <p>{{ card.desc }}</p>
-          </article>
-        </section>
-
-        <section class="ai-log-shell">
-          <aside class="surface ai-log-filter-panel">
-            <div class="surface-header compact">
-              <div>
-                <h2>日志筛选</h2>
-                <p>只展示当前登录用户自己的日志。</p>
-              </div>
-            </div>
-
-            <label class="log-field">
-              <span>关键词</span>
-              <input v-model.trim="filters.keyword" placeholder="搜索问题、答案、Trace ID" />
-            </label>
-
-            <label class="log-field">
-              <span>状态</span>
-              <select v-model="filters.status">
-                <option value="all">全部状态</option>
-                <option value="success">成功</option>
-                <option value="failed">失败</option>
-                <option value="action_required">待确认</option>
-                <option value="cancelled">已取消</option>
-              </select>
-            </label>
-
-            <label class="log-field">
-              <span>日志类型</span>
-              <select v-model="filters.type">
-                <option value="all">全部类型</option>
-                <option value="rag">RAG 检索</option>
-                <option value="summary">资料摘要</option>
-                <option value="keywords">关键词提取</option>
-                <option value="review">引用检查</option>
-              </select>
-            </label>
-
-            <div class="log-scope-card">
-              <User />
-              <div>
-                <strong>{{ currentUserLabel }}</strong>
-                <span>日志可见范围：仅本人</span>
-              </div>
-            </div>
-          </aside>
-
-          <section class="surface ai-log-list-panel">
-            <div class="surface-header compact">
-              <div>
-                <h2>调用日志</h2>
-                <p>每条日志对应一次 Python Agent 或 RAG 执行快照。</p>
-              </div>
-              <span class="log-count">{{ filteredLogs.length }} 条</span>
-            </div>
-
-            <div class="ai-log-list">
-              <article
-                v-for="log in filteredLogs"
-                :key="log.traceId"
-                class="ai-log-card"
-                :class="{ selected: selectedLog?.traceId === log.traceId }"
-                @click="selectLog(log)"
+      <section class="chart-grid">
+        <article class="chart-panel">
+          <div class="panel-title">
+            <h2>操作结果</h2>
+            <button v-if="selectedStatusKey" type="button" @click="clearStatusFilter">清除筛选</button>
+          </div>
+          <div class="chart-body">
+            <svg class="pie-chart" viewBox="0 0 42 42" aria-label="操作结果统计">
+              <circle class="pie-bg" cx="21" cy="21" r="15.915" />
+              <circle
+                v-for="segment in resultSegments"
+                :key="segment.key"
+                class="pie-slice"
+                cx="21"
+                cy="21"
+                r="15.915"
+                :stroke="segment.color"
+                :stroke-dasharray="`${segment.percent} ${100 - segment.percent}`"
+                :stroke-dashoffset="segment.offset"
+                @click="selectStatus(segment.key)"
+              />
+            </svg>
+            <div class="legend-list">
+              <button
+                v-for="item in resultStats"
+                :key="item.key"
+                type="button"
+                :class="{ active: selectedStatusKey === item.key }"
+                @click="selectStatus(item.key)"
               >
-                <div class="log-card-top">
-                  <span :class="['log-status', `status-${log.status}`]">{{ statusLabel(log.status) }}</span>
-                  <em>{{ formatTime(log.updatedAt || log.startedAt) }}</em>
-                </div>
-                <h3>{{ log.title }}</h3>
-                <p>{{ log.answer || '暂无最终回答，查看右侧详情了解执行步骤。' }}</p>
-                <div class="log-card-meta">
-                  <span><Timer />{{ log.durationMs }}ms</span>
-                  <span><Search />{{ log.sourceCount }} 个召回片段</span>
-                  <span><Coin />{{ displayTokenUsage(log) }}</span>
-                </div>
-              </article>
-
-              <div v-if="!filteredLogs.length" class="empty-state">
-                {{ loading ? '正在加载 AI 日志' : '暂无符合条件的 AI 日志' }}
-              </div>
+                <i :style="{ backgroundColor: item.color }"></i>
+                <span>{{ item.label }}</span>
+                <strong>{{ item.value }}</strong>
+              </button>
             </div>
-          </section>
+          </div>
+        </article>
 
-          <section class="surface ai-log-detail-panel">
-            <div class="surface-header compact">
-              <div>
-                <h2>日志详情</h2>
-                <p>查看召回资料、工具步骤和上下文窗口。</p>
-              </div>
+        <article class="chart-panel">
+          <div class="panel-title">
+            <h2>业务功能</h2>
+            <button v-if="selectedFunctionName" type="button" @click="clearFunctionFilter">清除筛选</button>
+          </div>
+          <div class="chart-body">
+            <svg class="pie-chart" viewBox="0 0 42 42" aria-label="业务功能统计">
+              <circle class="pie-bg" cx="21" cy="21" r="15.915" />
+              <circle
+                v-for="segment in functionSegments"
+                :key="segment.key"
+                class="pie-slice"
+                cx="21"
+                cy="21"
+                r="15.915"
+                :stroke="segment.color"
+                :stroke-dasharray="`${segment.percent} ${100 - segment.percent}`"
+                :stroke-dashoffset="segment.offset"
+                @click="selectFunction(segment.name)"
+              />
+            </svg>
+            <div class="legend-list">
+              <button
+                v-for="item in functionStats"
+                :key="item.key"
+                type="button"
+                :class="{ active: selectedFunctionName === item.name }"
+                @click="selectFunction(item.name)"
+              >
+                <i :style="{ backgroundColor: item.color }"></i>
+                <span>{{ item.name }}</span>
+                <strong>{{ item.value }}</strong>
+              </button>
+              <div v-if="!functionStats.length" class="chart-empty">暂无业务操作</div>
             </div>
+          </div>
+        </article>
+      </section>
 
-            <template v-if="selectedLog">
-              <div class="trace-box">
-                <span>Trace ID</span>
-                <strong>{{ selectedLog.traceId }}</strong>
-              </div>
+      <section class="log-table-panel">
+        <div class="table-toolbar">
+          <div>
+            <h2>业务操作列表</h2>
+            <p>{{ activeFilterText }}</p>
+          </div>
+          <div class="toolbar-actions">
+            <select v-model="successFilter" @change="handleSuccessSelect">
+              <option value="">全部结果</option>
+              <option value="true">仅成功</option>
+              <option value="false">仅失败</option>
+            </select>
+            <select v-model.number="pageSize" @change="reloadPage(1)">
+              <option :value="10">10/页</option>
+              <option :value="20">20/页</option>
+              <option :value="50">50/页</option>
+            </select>
+          </div>
+        </div>
 
-              <div class="detail-section">
-                <h3>召回资料</h3>
-                <div class="source-list">
-                  <div v-for="source in selectedLog.sources" :key="source.key" class="source-item">
-                    <strong>{{ source.fileName }}</strong>
-                    <span>{{ source.chunkLabel }}</span>
-                    <p>{{ source.content }}</p>
-                    <em>score {{ source.score }}</em>
-                  </div>
-                  <div v-if="!selectedLog.sources.length" class="empty-state small">本次日志暂无召回资料</div>
-                </div>
-              </div>
+        <div class="log-table">
+          <div class="log-table-head">
+            <span>发起时间</span>
+            <span>业务功能</span>
+            <span>操作名称</span>
+            <span>结果</span>
+            <span>告警信息</span>
+            <span>耗时</span>
+          </div>
 
-              <div class="detail-section">
-                <h3>执行步骤</h3>
-                <div class="step-timeline">
-                  <div v-for="step in selectedLog.steps" :key="step.key" class="step-item">
-                    <span :class="['step-dot', step.status]" />
-                    <div>
-                      <strong>{{ step.title }}</strong>
-                      <p>{{ step.detail }}</p>
-                    </div>
-                    <em>{{ step.toolName }}</em>
-                  </div>
-                  <div v-if="!selectedLog.steps.length" class="empty-state small">本次日志暂无结构化步骤</div>
-                </div>
-              </div>
+          <div v-if="!records.length" class="empty-state">
+            {{ loading ? '正在加载日志' : '暂无符合条件的业务操作' }}
+          </div>
 
-              <div class="detail-section">
-                <h3>上下文与消耗</h3>
-                <div class="context-grid">
-                  <div>
-                    <span>TopK</span>
-                    <strong>{{ selectedLog.topK }}</strong>
-                  </div>
-                  <div>
-                    <span>上下文片段</span>
-                    <strong>{{ selectedLog.sourceCount }}</strong>
-                  </div>
-                  <div>
-                    <span>Token 消耗</span>
-                    <strong>{{ displayTokenUsage(selectedLog) }}</strong>
-                  </div>
-                  <div>
-                    <span>知识库</span>
-                    <strong>{{ selectedLog.knowledgeBaseId }}</strong>
-                  </div>
-                </div>
-              </div>
-            </template>
+          <article v-for="row in records" :key="row.eventId" class="log-row">
+            <span>{{ formatTime(row.occurredAt || row.createdAt) }}</span>
+            <strong>{{ row.functionName || row.module || '-' }}</strong>
+            <em>{{ row.operationName || '-' }}</em>
+            <span class="status-pill" :class="{ failed: !row.success }">{{ row.success ? '成功' : '失败' }}</span>
+            <span class="alert-cell">{{ row.alertMessage || '-' }}</span>
+            <span>{{ row.durationMs == null ? '-' : `${row.durationMs} ms` }}</span>
+          </article>
+        </div>
 
-            <div v-else class="empty-state">请选择一条 AI 日志查看详情</div>
-          </section>
-        </section>
-      </template>
+        <div class="pagination-bar">
+          <button type="button" :disabled="pageNum <= 1 || loading" @click="reloadPage(pageNum - 1)">上一页</button>
+          <span>第 {{ pageNum }} / {{ totalPages || 1 }} 页，共 {{ total }} 条</span>
+          <button type="button" :disabled="pageNum >= totalPages || loading" @click="reloadPage(pageNum + 1)">下一页</button>
+        </div>
+      </section>
     </div>
   </StudioLayout>
 </template>
 
 <script setup>
-import { computed, onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
+import { Refresh } from '@element-plus/icons-vue'
 import StudioLayout from '../components/StudioLayout.vue'
-import { agentLogApi } from '../api/agentLog'
-import { STORAGE_KEYS } from '../constants'
-import { Coin, DataAnalysis, DocumentChecked, Refresh, Search, Timer, User, Warning } from '@element-plus/icons-vue'
+import { logsApi } from '../api/logs'
+import { fetchUserOperationSummary } from '../utils/sidebarStats'
 
 const loading = ref(false)
-const logs = ref([])
-const selectedTraceId = ref('')
-const filters = reactive({
-  keyword: '',
-  status: 'all',
-  type: 'all',
-})
+const summary = ref({ successStatus: [], functionStats: [], days: 5 })
+const records = ref([])
+const total = ref(0)
+const pageNum = ref(1)
+const pageSize = ref(10)
+const successFilter = ref('')
+const selectedStatusKey = ref('')
+const selectedFunctionName = ref('')
 
-const currentUser = computed(() => {
-  try {
-    return JSON.parse(localStorage.getItem(STORAGE_KEYS.USER_INFO) || '{}')
-  } catch {
-    return {}
-  }
-})
+const palette = ['#1f9d68', '#d95656', '#4d8068', '#e5a33a', '#5f7f96', '#8a6bcb']
 
-const currentUserId = computed(() => String(currentUser.value.id || currentUser.value.userId || localStorage.getItem('userId') || ''))
-const currentUsername = computed(() => String(currentUser.value.username || currentUser.value.name || ''))
-const currentRole = computed(() => String(currentUser.value.role || currentUser.value.userRole || '').toLowerCase())
-const isAdminUser = computed(() => currentUsername.value.toLowerCase() === 'admin' || currentRole.value === 'admin')
-const currentUserLabel = computed(() => currentUser.value.displayName || currentUsername.value || `用户 ${currentUserId.value || '-'}`)
+const normalizeName = item => item?.name ?? item?.NAME ?? ''
+const normalizeValue = item => Number(item?.value ?? item?.VALUE ?? 0)
 
-const ownLogs = computed(() => {
-  if (isAdminUser.value) return []
-  return logs.value.filter((log) => {
-    // 后端已按 JWT userId 查询；这里对带 userId 的日志再做一次前端过滤。
-    if (log.userId === undefined || log.userId === null || log.userId === '') return true
-    return String(log.userId) === currentUserId.value
-  })
-})
-
-const filteredLogs = computed(() => {
-  const keyword = filters.keyword.toLowerCase()
-  return ownLogs.value.filter((log) => {
-    const matchesKeyword = !keyword || [
-      log.traceId,
-      log.title,
-      log.answer,
-      log.knowledgeBaseId,
-    ].some((value) => String(value || '').toLowerCase().includes(keyword))
-    const matchesStatus = filters.status === 'all' || log.status === filters.status
-    const matchesType = filters.type === 'all' || log.type === filters.type
-    return matchesKeyword && matchesStatus && matchesType
-  })
-})
-
-const selectedLog = computed(() => filteredLogs.value.find((log) => log.traceId === selectedTraceId.value) || filteredLogs.value[0] || null)
-
-const statCards = computed(() => {
-  const total = ownLogs.value.length
-  const successCount = ownLogs.value.filter((log) => log.status === 'success').length
-  const sourceCount = ownLogs.value.reduce((sum, log) => sum + log.sourceCount, 0)
-  const tokenCount = ownLogs.value.reduce((sum, log) => sum + log.tokenUsage.total, 0)
+const resultStats = computed(() => {
+  const values = new Map((summary.value.successStatus || []).map(item => [normalizeName(item), normalizeValue(item)]))
   return [
-    { label: '日志总数', value: String(total), desc: '当前用户自己的 AI 调用记录', icon: DocumentChecked },
-    { label: '成功调用', value: String(successCount), desc: '状态为 success 的 Agent 执行快照', icon: DataAnalysis },
-    { label: '召回片段', value: String(sourceCount), desc: '所有日志累计召回的资料片段', icon: Search },
-    { label: 'Token 消耗', value: tokenCount ? String(tokenCount) : '-', desc: '后端返回 tokenUsage 时自动汇总', icon: Coin },
+    { key: 'SUCCESS', label: '成功', color: '#1f9d68', value: values.get('SUCCESS') || 0 },
+    { key: 'FAILED', label: '失败', color: '#d95656', value: values.get('FAILED') || 0 },
   ]
 })
 
-const normalizeLog = (raw) => {
-  const context = raw.context || {}
-  const contextWindow = raw.contextWindow || raw.context_window || context.contextWindow || {}
-  const sources = normalizeSources(raw.sources || contextWindow.sources || [])
-  const steps = normalizeSteps(raw.plan || [], raw.results || [])
-  const tokenUsage = normalizeTokenUsage(raw.tokenUsage || raw.usage || contextWindow.tokenUsage || {})
-  return {
-    traceId: String(raw.traceId || raw.trace_id || raw.id || ''),
-    userId: raw.userId ?? raw.user_id ?? context.userId,
-    title: String(raw.task || context.title || context.instruction || 'AI 调用日志'),
-    type: resolveLogType(raw, context),
-    status: normalizeStatus(raw.status),
-    answer: String(raw.answer || raw.result || '').slice(0, 220),
-    durationMs: Number(raw.durationMs || raw.duration_ms || 0),
-    updatedAt: raw.updatedAt || raw.updated_at || raw.finishedAt || raw.startedAt,
-    startedAt: raw.startedAt,
-    sources,
-    sourceCount: sources.length,
-    steps,
-    topK: raw.topK || raw.top_k || context.topK || contextWindow.topK || '-',
-    tokenUsage,
-    knowledgeBaseId: raw.knowledgeBaseId || raw.knowledge_base_id || context.knowledgeBaseId || 'default',
-  }
-}
+const functionStats = computed(() => (
+  (summary.value.functionStats || [])
+    .map((item, index) => ({
+      key: normalizeName(item) || `FUNCTION_${index}`,
+      name: normalizeName(item) || '其他功能',
+      value: normalizeValue(item),
+      color: palette[index % palette.length],
+    }))
+    .filter(item => item.value > 0)
+))
 
-const normalizeSources = (sources) => {
-  if (!Array.isArray(sources)) return []
-  return sources.slice(0, 8).map((source, index) => ({
-    key: `${source.fileId || source.fileName || 'source'}-${source.chunkNo || index}`,
-    fileName: source.fileName || source.filename || source.documentName || '未知资料',
-    chunkLabel: source.chunkNo || source.chunkId ? `片段 ${source.chunkNo || source.chunkId}` : `片段 ${index + 1}`,
-    content: String(source.content || source.text || source.chunkText || '').slice(0, 180) || '暂无片段内容',
-    score: Number(source.score || source.similarity || 0).toFixed(3),
-  }))
-}
+const successCount = computed(() => resultStats.value.find(item => item.key === 'SUCCESS')?.value || 0)
+const failedCount = computed(() => resultStats.value.find(item => item.key === 'FAILED')?.value || 0)
+const totalOperationCount = computed(() => successCount.value + failedCount.value)
+const totalPages = computed(() => Math.ceil(total.value / pageSize.value))
 
-const normalizeSteps = (plan, results) => {
-  const resultMap = new Map((Array.isArray(results) ? results : []).map((result) => [String(result.stepId || result.step_id || ''), result]))
-  if (Array.isArray(plan) && plan.length) {
-    return plan.map((step, index) => {
-      const stepId = String(step.id || `step-${index}`)
-      const result = resultMap.get(stepId) || {}
-      return {
-        key: stepId,
-        title: step.description || `步骤 ${index + 1}`,
-        detail: result.message || step.reasoning || '等待执行结果',
-        toolName: step.toolName || step.tool_name || result.toolName || 'agent',
-        status: normalizeStatus(result.status || step.status || 'planned'),
-      }
+const activeFilterText = computed(() => {
+  const filters = []
+  if (selectedStatusKey.value) filters.push(selectedStatusKey.value === 'SUCCESS' ? '成功' : '失败')
+  if (selectedFunctionName.value) filters.push(selectedFunctionName.value)
+  return filters.length ? `当前筛选：${filters.join(' / ')}` : '展示最近 5 天主动业务操作'
+})
+
+/**
+ * 根据统计数据生成 SVG 饼图片段。
+ */
+const buildSegments = (items) => {
+  const totalValue = items.reduce((sum, item) => sum + item.value, 0)
+  let offset = 25
+  return items
+    .filter(item => item.value > 0 && totalValue > 0)
+    .map((item) => {
+      const percent = (item.value / totalValue) * 100
+      const segment = { ...item, percent, offset }
+      offset -= percent
+      return segment
     })
+}
+
+const resultSegments = computed(() => buildSegments(resultStats.value))
+const functionSegments = computed(() => buildSegments(functionStats.value))
+
+/**
+ * 刷新统计数据。
+ */
+const loadSummary = async (force = false) => {
+  summary.value = await fetchUserOperationSummary({ force, silent: false })
+}
+
+/**
+ * 分页加载当前筛选条件下的用户业务日志。
+ */
+const loadOperations = async (targetPage = pageNum.value) => {
+  const params = {
+    pageNum: targetPage,
+    pageSize: pageSize.value,
   }
-  return (Array.isArray(results) ? results : []).map((result, index) => ({
-    key: String(result.stepId || result.step_id || `result-${index}`),
-    title: result.message || `执行结果 ${index + 1}`,
-    detail: result.message || '工具执行完成',
-    toolName: result.toolName || result.tool_name || 'agent',
-    status: normalizeStatus(result.status),
-  }))
-}
-
-const normalizeTokenUsage = (usage) => {
-  const prompt = Number(usage.promptTokens || usage.prompt_tokens || 0)
-  const completion = Number(usage.completionTokens || usage.completion_tokens || 0)
-  const total = Number(usage.totalTokens || usage.total_tokens || prompt + completion || 0)
-  return { prompt, completion, total }
-}
-
-const normalizeStatus = (status) => {
-  const normalized = String(status || '').toLowerCase()
-  if (['success', 'failed', 'error', 'action_required', 'cancelled'].includes(normalized)) {
-    return normalized === 'error' ? 'failed' : normalized
+  if (successFilter.value !== '') {
+    params.success = successFilter.value === 'true'
   }
-  return normalized || 'planned'
-}
-
-const resolveLogType = (raw, context) => {
-  const value = String(context.todoType || context.type || raw.type || raw.mode || '').toLowerCase()
-  if (['summary', 'keywords', 'review'].includes(value)) return value
-  if (value.includes('rag') || value.includes('chat')) return 'rag'
-  return 'rag'
-}
-
-const statusLabel = (status) => ({
-  success: '成功',
-  failed: '失败',
-  action_required: '待确认',
-  cancelled: '已取消',
-  planned: '已计划',
-}[status] || status)
-
-const displayTokenUsage = (log) => {
-  return log.tokenUsage.total ? `${log.tokenUsage.total}` : '-'
-}
-
-const formatTime = (value) => {
-  if (!value) return '未知时间'
-  const date = new Date(Number(value) || value)
-  if (Number.isNaN(date.getTime())) return '未知时间'
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hour = String(date.getHours()).padStart(2, '0')
-  const minute = String(date.getMinutes()).padStart(2, '0')
-  return `${month}-${day} ${hour}:${minute}`
-}
-
-const selectLog = (log) => {
-  selectedTraceId.value = log.traceId
-}
-
-const loadLogs = async () => {
-  if (isAdminUser.value) {
-    logs.value = []
-    return
+  if (selectedFunctionName.value) {
+    params.functionName = selectedFunctionName.value
   }
+  const res = await logsApi.listUserOperations(params)
+  const page = res.data || {}
+  records.value = page.records || []
+  total.value = page.total || 0
+  pageNum.value = page.pageNum || targetPage
+}
+
+/**
+ * 刷新整页数据。
+ */
+const refreshAll = async (force = false) => {
   loading.value = true
   try {
-    const response = await agentLogApi.listTasks()
-    const list = Array.isArray(response.data) ? response.data : []
-    logs.value = list.map(normalizeLog).filter((log) => log.traceId)
-    selectedTraceId.value = logs.value[0]?.traceId || ''
-  } catch (error) {
-    console.warn('AI 日志加载失败', error)
-    logs.value = []
+    await loadSummary(force === true)
+    await loadOperations(1)
   } finally {
     loading.value = false
   }
 }
 
-onMounted(loadLogs)
+/**
+ * 切换分页。
+ */
+const reloadPage = async (targetPage = 1) => {
+  loading.value = true
+  try {
+    await loadOperations(targetPage)
+  } finally {
+    loading.value = false
+  }
+}
+
+/**
+ * 通过结果饼图切换成功/失败筛选。
+ */
+const selectStatus = async (key) => {
+  selectedStatusKey.value = selectedStatusKey.value === key ? '' : key
+  successFilter.value = selectedStatusKey.value === 'SUCCESS'
+    ? 'true'
+    : selectedStatusKey.value === 'FAILED'
+      ? 'false'
+      : ''
+  await reloadPage(1)
+}
+
+/**
+ * 清除成功/失败筛选。
+ */
+const clearStatusFilter = async () => {
+  selectedStatusKey.value = ''
+  successFilter.value = ''
+  await reloadPage(1)
+}
+
+/**
+ * 通过功能饼图切换业务功能筛选。
+ */
+const selectFunction = async (name) => {
+  selectedFunctionName.value = selectedFunctionName.value === name ? '' : name
+  await reloadPage(1)
+}
+
+/**
+ * 清除业务功能筛选。
+ */
+const clearFunctionFilter = async () => {
+  selectedFunctionName.value = ''
+  await reloadPage(1)
+}
+
+/**
+ * 处理成功/失败下拉筛选。
+ */
+const handleSuccessSelect = async () => {
+  selectedStatusKey.value = successFilter.value === 'true'
+    ? 'SUCCESS'
+    : successFilter.value === 'false'
+      ? 'FAILED'
+      : ''
+  await reloadPage(1)
+}
+
+/**
+ * 格式化后端 LocalDateTime。
+ */
+const formatTime = value => (value ? String(value).replace('T', ' ').slice(0, 19) : '-')
+
+onMounted(() => refreshAll(true))
 </script>
 
 <style scoped>
-.ai-log-page {
-  min-height: 100%;
-}
-
-.ai-log-hero p {
-  max-width: 860px;
-}
-
-.admin-log-placeholder {
-  display: flex;
-  align-items: flex-start;
-  gap: 16px;
-  padding: 28px;
-}
-
-.admin-log-placeholder svg {
-  width: 34px;
-  height: 34px;
-  color: #b45309;
-}
-
-.admin-log-placeholder h2 {
-  font-size: 22px;
-}
-
-.admin-log-placeholder p {
-  margin-top: 8px;
-  color: #64748b;
-  line-height: 1.7;
-}
-
-.ai-log-shell {
-  display: grid;
-  grid-template-columns: 280px minmax(360px, 0.9fr) minmax(420px, 1.1fr);
-  gap: 16px;
-  align-items: start;
-}
-
-.ai-log-filter-panel,
-.ai-log-list-panel,
-.ai-log-detail-panel {
-  min-width: 0;
-}
-
-.log-field {
-  display: block;
-  margin-top: 14px;
-}
-
-.log-field span {
-  display: block;
-  margin-bottom: 7px;
-  color: #475569;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.log-field input,
-.log-field select {
-  width: 100%;
-  height: 40px;
-  border: 1px solid #d7dee9;
-  border-radius: 8px;
-  background: #ffffff;
-  color: #172033;
-  padding: 0 11px;
-  outline: none;
-}
-
-.log-field input:focus,
-.log-field select:focus {
-  border-color: #047857;
-}
-
-.log-scope-card {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  margin-top: 18px;
-  border: 1px solid #dbeafe;
-  border-radius: 8px;
-  background: #eff6ff;
-  padding: 12px;
-}
-
-.log-scope-card svg {
-  width: 22px;
-  height: 22px;
-  color: #2563eb;
-}
-
-.log-scope-card strong,
-.log-scope-card span {
-  display: block;
-}
-
-.log-scope-card span {
-  margin-top: 2px;
-  color: #64748b;
-  font-size: 12px;
-}
-
-.log-count {
-  border-radius: 999px;
-  background: #e2e8f0;
-  color: #334155;
-  padding: 6px 10px;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.ai-log-list {
+.user-log-page {
   display: flex;
   flex-direction: column;
-  gap: 10px;
-  max-height: 660px;
-  overflow: auto;
-  padding-right: 3px;
+  gap: 18px;
+  padding: 24px;
+  color: #1f2f2a;
 }
 
-.ai-log-card {
-  cursor: pointer;
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #f8fafc;
-  padding: 13px;
-  transition: border-color 0.18s ease, box-shadow 0.18s ease, transform 0.18s ease;
-}
-
-.ai-log-card:hover,
-.ai-log-card.selected {
-  border-color: #047857;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, 0.08);
-  transform: translateY(-1px);
-}
-
-.log-card-top,
-.log-card-meta {
+.log-header,
+.summary-row,
+.chart-grid,
+.panel-title,
+.table-toolbar,
+.pagination-bar {
   display: flex;
-  align-items: center;
-  gap: 8px;
+  gap: 14px;
 }
 
-.log-card-top {
+.log-header,
+.panel-title,
+.table-toolbar,
+.pagination-bar {
+  align-items: center;
   justify-content: space-between;
 }
 
-.log-card-top em {
-  color: #94a3b8;
-  font-size: 12px;
-  font-style: normal;
+.eyebrow {
+  color: #1f9d68;
+  font-weight: 700;
 }
 
-.log-status {
-  border-radius: 999px;
-  background: #e2e8f0;
-  color: #475569;
-  padding: 4px 8px;
-  font-size: 12px;
-  font-weight: 800;
+.log-header h1 {
+  margin: 6px 0;
+  font-size: 30px;
+  letter-spacing: 0;
 }
 
-.status-success {
-  background: #dcfce7;
-  color: #047857;
+.log-header p,
+.summary-card p,
+.table-toolbar p {
+  color: #65766e;
 }
 
-.status-failed {
-  background: #fee2e2;
-  color: #b91c1c;
+.refresh-button,
+.panel-title button,
+.pagination-bar button {
+  border: 1px solid #bdd7ca;
+  background: #fff;
+  color: #285b47;
+  border-radius: 8px;
+  padding: 9px 13px;
+  cursor: pointer;
 }
 
-.status-action_required {
-  background: #fef3c7;
-  color: #a16207;
-}
-
-.ai-log-card h3 {
-  margin-top: 10px;
-  font-size: 15px;
-  line-height: 1.45;
-}
-
-.ai-log-card p {
-  margin-top: 8px;
-  color: #64748b;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.log-card-meta {
-  flex-wrap: wrap;
-  margin-top: 10px;
-  color: #475569;
-  font-size: 12px;
-}
-
-.log-card-meta span {
+.refresh-button {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
+  gap: 6px;
+  background: #1f9d68;
+  color: #fff;
+  border-color: #1f9d68;
 }
 
-.log-card-meta svg {
-  width: 14px;
-  height: 14px;
-  color: #047857;
-}
-
-.trace-box {
-  border: 1px solid #dbe3ee;
-  border-radius: 8px;
-  background: #f8fafc;
-  padding: 12px;
-}
-
-.trace-box span,
-.trace-box strong {
-  display: block;
-}
-
-.trace-box span {
-  color: #64748b;
-  font-size: 12px;
-}
-
-.trace-box strong {
-  margin-top: 4px;
-  word-break: break-all;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
-  font-size: 13px;
-}
-
-.detail-section {
-  margin-top: 18px;
-}
-
-.detail-section h3 {
-  margin-bottom: 10px;
-  font-size: 16px;
-}
-
-.source-list,
-.step-timeline {
-  display: flex;
-  flex-direction: column;
-  gap: 9px;
-}
-
-.source-item,
-.step-item {
-  border: 1px solid #e2e8f0;
-  border-radius: 8px;
-  background: #ffffff;
-  padding: 11px;
-}
-
-.source-item strong,
-.source-item span,
-.source-item em {
-  display: block;
-}
-
-.source-item span,
-.source-item em {
-  margin-top: 3px;
-  color: #64748b;
-  font-size: 12px;
-  font-style: normal;
-}
-
-.source-item p {
-  margin-top: 8px;
-  color: #334155;
-  font-size: 13px;
-  line-height: 1.55;
-}
-
-.step-item {
+.chart-grid {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr) auto;
-  gap: 10px;
-  align-items: start;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.step-dot {
-  width: 10px;
-  height: 10px;
-  margin-top: 5px;
-  border-radius: 999px;
-  background: #94a3b8;
+.summary-row {
+  display: grid;
+  grid-template-columns: minmax(150px, 1fr) minmax(112px, 0.62fr);
+  align-items: stretch;
+  gap: 12px;
 }
 
-.step-dot.success {
-  background: #047857;
+.summary-side {
+  display: grid;
+  grid-template-rows: repeat(2, minmax(0, 1fr));
+  gap: 12px;
 }
 
-.step-dot.failed {
-  background: #b91c1c;
+.summary-card,
+.chart-panel,
+.log-table-panel {
+  background: #fff;
+  border: 1px solid #d8e6df;
+  border-radius: 8px;
+  box-shadow: 0 12px 30px rgba(31, 80, 60, 0.08);
+  padding: 18px;
 }
 
-.step-dot.action_required {
-  background: #a16207;
-}
-
-.step-item strong {
+.summary-card strong {
   display: block;
-  font-size: 14px;
+  margin: 8px 0;
+  font-size: 28px;
+  color: #285b47;
 }
 
-.step-item p {
-  margin-top: 4px;
-  color: #64748b;
-  font-size: 13px;
+.summary-card p {
+  margin: 0;
+  color: #637a70;
   line-height: 1.5;
 }
 
-.step-item em {
-  color: #64748b;
-  font-size: 12px;
-  font-style: normal;
-  white-space: nowrap;
+.total-card {
+  min-height: 168px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
 }
 
-.context-grid {
+.total-card strong {
+  font-size: 44px;
+  line-height: 1;
+}
+
+.summary-card.mini {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 14px 16px;
+}
+
+.summary-card.mini strong {
+  margin: 5px 0;
+  font-size: 24px;
+}
+
+.summary-card.mini p {
+  display: none;
+}
+
+.summary-card.success strong {
+  color: #1f9d68;
+}
+
+.summary-card.danger strong {
+  color: #d95656;
+}
+
+.panel-title h2,
+.table-toolbar h2 {
+  margin: 0;
+  font-size: 18px;
+  letter-spacing: 0;
+}
+
+.chart-body {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 10px;
+  grid-template-columns: 180px 1fr;
+  align-items: center;
+  gap: 18px;
+  margin-top: 14px;
 }
 
-.context-grid div {
-  border: 1px solid #e2e8f0;
+.pie-chart {
+  width: 180px;
+  height: 180px;
+  transform: rotate(-90deg);
+}
+
+.pie-bg,
+.pie-slice {
+  fill: none;
+  stroke-width: 8;
+}
+
+.pie-bg {
+  stroke: #edf4f0;
+}
+
+.pie-slice {
+  cursor: pointer;
+  transition: opacity 0.2s ease;
+}
+
+.pie-slice:hover {
+  opacity: 0.75;
+}
+
+.legend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.legend-list button {
+  display: grid;
+  grid-template-columns: 10px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid transparent;
+  background: #f7fbf9;
   border-radius: 8px;
-  background: #f8fafc;
-  padding: 11px;
+  padding: 9px 10px;
+  color: #2d463b;
+  cursor: pointer;
 }
 
-.context-grid span,
-.context-grid strong {
-  display: block;
+.legend-list button.active {
+  border-color: #1f9d68;
+  background: #effaf5;
 }
 
-.context-grid span {
-  color: #64748b;
-  font-size: 12px;
+.legend-list i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
 }
 
-.context-grid strong {
-  margin-top: 4px;
-  color: #172033;
-  font-size: 15px;
+.legend-list span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.empty-state.small {
-  min-height: 72px;
+.chart-empty {
+  color: #7b8d85;
 }
 
-@media (max-width: 1280px) {
-  .ai-log-shell {
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.toolbar-actions select {
+  height: 36px;
+  border: 1px solid #bdd7ca;
+  border-radius: 8px;
+  color: #285b47;
+  background: #fff;
+  padding: 0 10px;
+}
+
+.log-table {
+  margin-top: 14px;
+  border: 1px solid #e2ebe6;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.log-table-head,
+.log-row {
+  display: grid;
+  grid-template-columns: 170px minmax(120px, 1fr) minmax(150px, 1.1fr) 80px minmax(160px, 1.2fr) 90px;
+  gap: 12px;
+  align-items: center;
+  padding: 12px 14px;
+}
+
+.log-table-head {
+  background: #eff8f4;
+  color: #466759;
+  font-weight: 700;
+}
+
+.log-row {
+  border-top: 1px solid #edf3f0;
+  color: #40544b;
+}
+
+.log-row strong,
+.log-row em,
+.alert-cell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: normal;
+}
+
+.status-pill {
+  width: 58px;
+  border-radius: 999px;
+  background: #e9f8f1;
+  color: #167b52;
+  text-align: center;
+  padding: 5px 0;
+  font-weight: 700;
+}
+
+.status-pill.failed {
+  background: #fff0ee;
+  color: #c44d43;
+}
+
+.empty-state {
+  padding: 28px;
+  text-align: center;
+  color: #7b8d85;
+}
+
+button:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+@media (max-width: 1180px) {
+  .chart-grid,
+  .chart-body {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 860px) {
+  .log-header,
+  .table-toolbar,
+  .pagination-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .log-table-head,
+  .log-row {
     grid-template-columns: 1fr;
   }
 
-  .ai-log-list {
-    max-height: none;
+  .status-pill {
+    width: 100%;
+  }
+
+  .summary-row {
+    grid-template-columns: minmax(0, 1.05fr) minmax(98px, 0.72fr);
+    gap: 10px;
+  }
+
+  .summary-card {
+    padding: 14px;
+  }
+
+  .total-card {
+    min-height: 150px;
+  }
+
+  .total-card strong {
+    font-size: 40px;
+  }
+
+  .summary-card.mini {
+    padding: 10px 12px;
+  }
+
+  .summary-card.mini strong {
+    font-size: 22px;
   }
 }
 </style>

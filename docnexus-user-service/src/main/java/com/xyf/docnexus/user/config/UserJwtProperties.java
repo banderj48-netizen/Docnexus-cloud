@@ -25,6 +25,14 @@ public class UserJwtProperties {
     private String issuer;
 
     /**
+     * 当前 JWT 签名密钥 ID。
+     *
+     * <p>多实例部署时，所有 user-service 实例必须使用同一个 active keyId 和同一份受管私钥。
+     * Gateway 会根据 JWT Header 中的 kid 选择对应公钥验签。</p>
+     */
+    private String keyId = "docnexus-rsa-2026-01";
+
+    /**
      * JWT 有效期，单位：秒。
      *
      * <p>user-service 签发令牌时会用当前时间加上该秒数生成过期时间 exp。</p>
@@ -53,6 +61,18 @@ public class UserJwtProperties {
      * <p>私钥只放在 user-service，gateway-service 不应该持有私钥。</p>
      */
     private PrivateKeyStore privateKeyStore = new PrivateKeyStore();
+
+    /**
+     * JWKS 内部接口配置。
+     *
+     * <p>该接口只暴露公钥材料，供 Gateway 拉取和缓存，不暴露私钥。</p>
+     */
+    private Jwks jwks = new Jwks();
+
+    @Data
+    public static class Jwks {
+        private Boolean enabled = true;
+    }
 
     @Data
     public static class PrivateKeyStore {

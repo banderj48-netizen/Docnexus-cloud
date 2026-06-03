@@ -1,10 +1,13 @@
 package com.xyf.docnexus.gateway.filters;
 
 import com.auth0.jwt.exceptions.JWTVerificationException;
-
+import com.xyf.docnexus.common.constant.MqTopicConstants;
+import com.xyf.docnexus.common.event.SecurityAlertEvent;
 import com.xyf.docnexus.gateway.config.GatewayAuthCacheProperties;
 import com.xyf.docnexus.gateway.config.GatewayJwtProperties;
+import com.xyf.docnexus.gateway.event.GatewayEventPublisher;
 import com.xyf.docnexus.gateway.security.GatewayAuthCache;
+import com.xyf.docnexus.gateway.security.GatewayTrustedHeaderSigner;
 import com.xyf.docnexus.gateway.security.ReactiveRedisTokenSessionStore;
 import com.xyf.docnexus.gateway.util.JwtVerifyTool;
 import com.xyf.docnexus.gateway.util.JwtVerifyTool.UserTokenPayload;
@@ -26,14 +29,13 @@ import reactor.core.publisher.Mono;
 
 import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
+import java.time.LocalDateTime;
+import java.util.UUID;
 
 /**
- * 网关全局过滤器。
+ * 网关全局鉴权过滤器。
  *
- * <p>当前职责：
- * 1. 登录、注册、健康检查等白名单路径直接放行；
- * 2. 非白名单接口必须携带 Authorization: Bearer xxx；
- * 3. 校验通过后把用户身份写入请求头，再转发给下游服务。</p>
+ * <p>职责：白名单放行、accessToken 验签、Redis 实时态校验、Caffeine 短缓存、可信身份头注入和鉴权失败告警。</p>
  */
 @Component
 public class MyGlobalFilter implements GlobalFilter, Ordered {
@@ -45,39 +47,48 @@ public class MyGlobalFilter implements GlobalFilter, Ordered {
     private final JwtVerifyTool jwtVerifyTool;
     private final ReactiveRedisTokenSessionStore redisTokenSessionStore;
     private final GatewayAuthCache gatewayAuthCache;
+    private final GatewayTrustedHeaderSigner trustedHeaderSigner;
+    private final GatewayEventPublisher eventPublisher;
     private final AntPathMatcher antPathMatcher = new AntPathMatcher();
 
     public MyGlobalFilter(GatewayJwtProperties jwtProperties,
                           GatewayAuthCacheProperties authCacheProperties,
                           JwtVerifyTool jwtVerifyTool,
                           ReactiveRedisTokenSessionStore redisTokenSessionStore,
-                          GatewayAuthCache gatewayAuthCache) {
+                          GatewayAuthCache gatewayAuthCache,
+                          GatewayTrustedHeaderSigner trustedHeaderSigner,
+                          GatewayEventPublisher eventPublisher) {
         this.jwtProperties = jwtProperties;
         this.authCacheProperties = authCacheProperties;
         this.jwtVerifyTool = jwtVerifyTool;
         this.redisTokenSessionStore = redisTokenSessionStore;
         this.gatewayAuthCache = gatewayAuthCache;
+        this.trustedHeaderSigner = trustedHeaderSigner;
+        this.eventPublisher = eventPublisher;
     }
 
+    /**
+     * 执行网关鉴权和可信请求头注入。
+     */
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, GatewayFilterChain chain) {
         ServerHttpRequest request = exchange.getRequest();
         String path = request.getURI().getPath();
         String clientIp = resolveClientIp(request);
+        String requestId = ensureRequestId(exchange);
+        String traceId = ensureTraceId(exchange, requestId);
+        exchange.getAttributes().put(GatewayAuditGlobalFilter.ATTR_CLIENT_IP, clientIp);
 
-        // 白名单接口直接放行，例如登录、注册、找回密码、健康检查。
         if (isWhitePath(path)) {
-            log.debug("网关白名单放行，path={}", path);
-            ServerHttpRequest trustedRequest = buildTrustedClientIpRequest(request, clientIp);
+            ServerHttpRequest trustedRequest = buildTrustedClientIpRequest(request, clientIp, requestId, traceId);
             return chain.filter(exchange.mutate().request(trustedRequest).build());
         }
 
         String accessToken;
         try {
-            // 先提取 Bearer token。普通接口需要用 token hash 查询 L1 本地缓存。
             accessToken = jwtVerifyTool.extractBearerToken(request.getHeaders().getFirst(HttpHeaders.AUTHORIZATION));
         } catch (IllegalArgumentException exception) {
-            log.warn("网关 Authorization 解析失败，path={}, reason={}", path, exception.getMessage());
+            publishSecurityAlert(exchange, "UNAUTHORIZED", "缺少或非法 Authorization 请求头", exception.getMessage());
             return writeUnauthorizedResponse(exchange.getResponse(), "登录状态已失效，请重新登录");
         }
 
@@ -86,27 +97,26 @@ public class MyGlobalFilter implements GlobalFilter, Ordered {
         if (!strictPath) {
             UserTokenPayload cachedPayload = gatewayAuthCache.getIfValid(tokenHash);
             if (cachedPayload != null) {
-                ServerHttpRequest newRequest = buildTrustedUserRequest(request, cachedPayload);
-                log.debug("网关 L1 鉴权缓存命中，path={}, userId={}", path, cachedPayload.userId());
-                return chain.filter(exchange.mutate().request(newRequest).build());
+                writeUserAttributes(exchange, cachedPayload);
+                ServerHttpRequest trustedRequest = buildTrustedUserRequest(request, cachedPayload, requestId, traceId);
+                return chain.filter(exchange.mutate().request(trustedRequest).build());
             }
         }
 
         UserTokenPayload payload;
         try {
-            // L1 未命中或强校验路径：执行 JWT RSA 验签、issuer 校验和过期时间校验。
             payload = jwtVerifyTool.verifyToken(accessToken);
         } catch (JWTVerificationException | IllegalArgumentException exception) {
-            log.warn("网关 JWT 校验失败，path={}, reason={}", path, exception.getMessage());
+            publishSecurityAlert(exchange, "INVALID_TOKEN", "JWT 验签或声明校验失败", exception.getMessage());
             return writeUnauthorizedResponse(exchange.getResponse(), "登录状态已失效，请重新登录");
         }
 
-        // L2 Redis 校验：使用 MGET 一次读取 blacklist / access session / tokenVersion。
         return redisTokenSessionStore.isTokenActive(payload, clientIp)
                 .flatMap(active -> {
                     if (!active) {
-                        log.warn("网关拦截无效登录态，path={}, userId={}, jwtId={}",
-                                path, payload.userId(), payload.jwtId());
+                        writeUserAttributes(exchange, payload);
+                        publishSecurityAlert(exchange, "SESSION_REVOKED", "Redis 实时登录态校验失败",
+                                "blacklist/session/tokenVersion 校验未通过");
                         return writeUnauthorizedResponse(exchange.getResponse(), "登录状态已失效，请重新登录");
                     }
 
@@ -114,19 +124,18 @@ public class MyGlobalFilter implements GlobalFilter, Ordered {
                         gatewayAuthCache.put(tokenHash, payload);
                     }
 
-                    ServerHttpRequest newRequest = buildTrustedUserRequest(request, payload);
-
-                    log.debug("网关鉴权通过，path={}, userId={}, role={}",
-                            path, payload.userId(), payload.role());
-
-                    return chain.filter(exchange.mutate().request(newRequest).build());
+                    writeUserAttributes(exchange, payload);
+                    ServerHttpRequest trustedRequest = buildTrustedUserRequest(request, payload, requestId, traceId);
+                    log.debug("网关鉴权通过，path={}, userId={}, role={}", path, payload.userId(), payload.role());
+                    return chain.filter(exchange.mutate().request(trustedRequest).build());
                 });
     }
 
-
+    /**
+     * 鉴权过滤器在审计之后、限流之前执行。
+     */
     @Override
     public int getOrder() {
-        // 数字越小优先级越高，鉴权过滤器应尽量靠前执行。
         return 0;
     }
 
@@ -140,10 +149,7 @@ public class MyGlobalFilter implements GlobalFilter, Ordered {
     }
 
     /**
-     * 判断当前路径是否需要强校验。
-     *
-     * <p>强校验路径会绕过 L1 Caffeine 本地缓存，每次都执行 JWT 验签和 Redis MGET。
-     * 退出登录、改密码、上传删除等高风险接口必须放在该列表中。</p>
+     * 判断当前路径是否需要绕过 Caffeine 短缓存，直接执行强校验。
      */
     private boolean isStrictPath(String path) {
         return authCacheProperties.getStrictPaths()
@@ -152,52 +158,99 @@ public class MyGlobalFilter implements GlobalFilter, Ordered {
     }
 
     /**
-     * 构建带可信用户身份的新请求。
-     *
-     * <p>注意：必须先删除前端可能伪造的 X-User-* 请求头，
-     * 再由网关注入可信身份。</p>
+     * 构建携带可信用户身份的下游请求。
      */
-    private ServerHttpRequest buildTrustedUserRequest(ServerHttpRequest request, UserTokenPayload payload) {
+    private ServerHttpRequest buildTrustedUserRequest(ServerHttpRequest request,
+                                                      UserTokenPayload payload,
+                                                      String requestId,
+                                                      String traceId) {
+        String clientIp = resolveClientIp(request);
+        String timestamp = String.valueOf(System.currentTimeMillis());
+        String signature = trustedHeaderSigner.sign(requestId, timestamp, clientIp,
+                String.valueOf(payload.userId()), payload.jwtId());
+
         return request.mutate()
-                .headers(headers -> {
-                    headers.remove("X-User-Id");
-                    headers.remove("X-Username");
-                    headers.remove("X-User-Role");
-                    headers.remove("X-Access-Jti");
-                    headers.remove("X-Client-IP");
-                })
+                .headers(this::removeClientForgedHeaders)
                 .header("X-User-Id", String.valueOf(payload.userId()))
                 .header("X-Username", payload.username() == null ? "" : payload.username())
                 .header("X-User-Role", payload.role() == null ? "" : payload.role())
                 .header("X-Access-Jti", payload.jwtId() == null ? "" : payload.jwtId())
-                .header("X-Client-IP", resolveClientIp(request))
+                .header("X-Client-IP", clientIp)
+                .header("X-Request-Id", requestId)
+                .header("X-Trace-Id", traceId)
+                .header("X-Gateway-Timestamp", timestamp)
+                .header("X-Gateway-Signature", signature)
                 .build();
     }
 
     /**
-     * 为白名单请求注入可信客户端 IP。
-     *
-     * <p>登录和 refresh 虽然不需要 JWT 鉴权，但 user-service 需要用客户端 IP 计算 deviceId
-     * 和校验 IP 绑定。因此网关仍要删除前端伪造的身份头和 X-Client-IP，再注入自己解析出的 IP。</p>
+     * 为白名单请求注入可信客户端 IP 和网关签名。
      */
-    private ServerHttpRequest buildTrustedClientIpRequest(ServerHttpRequest request, String clientIp) {
+    private ServerHttpRequest buildTrustedClientIpRequest(ServerHttpRequest request,
+                                                          String clientIp,
+                                                          String requestId,
+                                                          String traceId) {
+        String timestamp = String.valueOf(System.currentTimeMillis());
+        String signature = trustedHeaderSigner.sign(requestId, timestamp, clientIp, "", "");
         return request.mutate()
-                .headers(headers -> {
-                    headers.remove("X-User-Id");
-                    headers.remove("X-Username");
-                    headers.remove("X-User-Role");
-                    headers.remove("X-Access-Jti");
-                    headers.remove("X-Client-IP");
-                })
+                .headers(this::removeClientForgedHeaders)
                 .header("X-Client-IP", clientIp)
+                .header("X-Request-Id", requestId)
+                .header("X-Trace-Id", traceId)
+                .header("X-Gateway-Timestamp", timestamp)
+                .header("X-Gateway-Signature", signature)
                 .build();
+    }
+
+    /**
+     * 删除客户端可能伪造的身份头和网关内部头。
+     */
+    private void removeClientForgedHeaders(HttpHeaders headers) {
+        headers.remove("X-User-Id");
+        headers.remove("X-Username");
+        headers.remove("X-User-Role");
+        headers.remove("X-Access-Jti");
+        headers.remove("X-Client-IP");
+        headers.remove("X-Request-Id");
+        headers.remove("X-Trace-Id");
+        headers.remove("X-Gateway-Timestamp");
+        headers.remove("X-Gateway-Signature");
+    }
+
+    /**
+     * 写入审计过滤器可读取的用户上下文。
+     */
+    private void writeUserAttributes(ServerWebExchange exchange, UserTokenPayload payload) {
+        exchange.getAttributes().put(GatewayAuditGlobalFilter.ATTR_USER_ID, payload.userId());
+        exchange.getAttributes().put(GatewayAuditGlobalFilter.ATTR_USERNAME, payload.username());
+    }
+
+    /**
+     * 获取请求 ID；如果审计过滤器尚未写入，则兜底生成。
+     */
+    private String ensureRequestId(ServerWebExchange exchange) {
+        String requestId = exchange.getAttribute(GatewayAuditGlobalFilter.ATTR_REQUEST_ID);
+        if (requestId == null || requestId.isBlank()) {
+            requestId = UUID.randomUUID().toString().replace("-", "");
+            exchange.getAttributes().put(GatewayAuditGlobalFilter.ATTR_REQUEST_ID, requestId);
+        }
+        return requestId;
+    }
+
+    /**
+     * 解析全链路追踪 ID，缺失时复用 requestId。
+     */
+    private String ensureTraceId(ServerWebExchange exchange, String requestId) {
+        String traceId = exchange.getAttribute(GatewayAuditGlobalFilter.ATTR_TRACE_ID);
+        if (traceId == null || traceId.isBlank()) {
+            traceId = requestId;
+            exchange.getAttributes().put(GatewayAuditGlobalFilter.ATTR_TRACE_ID, traceId);
+        }
+        return traceId;
     }
 
     /**
      * 解析当前请求真实 IP。
-     *
-     * <p>这里优先使用 Gateway 直接看到的 remoteAddress，不信任客户端可伪造的 X-Forwarded-For。
-     * 如果生产环境前面还有可信反向代理，需要在网关层统一清洗后再扩展该方法。</p>
      */
     private String resolveClientIp(ServerHttpRequest request) {
         InetSocketAddress remoteAddress = request.getRemoteAddress();
@@ -208,16 +261,34 @@ public class MyGlobalFilter implements GlobalFilter, Ordered {
     }
 
     /**
+     * 发布鉴权失败安全告警。
+     */
+    private void publishSecurityAlert(ServerWebExchange exchange, String alertType, String message, String detail) {
+        exchange.getAttributes().put(GatewayAuditGlobalFilter.ATTR_ERROR_MESSAGE, message);
+        SecurityAlertEvent event = new SecurityAlertEvent();
+        event.setEventId(UUID.randomUUID().toString().replace("-", ""));
+        event.setRequestId(exchange.getAttribute(GatewayAuditGlobalFilter.ATTR_REQUEST_ID));
+        event.setTraceId(exchange.getAttribute(GatewayAuditGlobalFilter.ATTR_TRACE_ID));
+        event.setAlertType(alertType);
+        event.setAlertLevel("WARN");
+        event.setUserId(exchange.getAttribute(GatewayAuditGlobalFilter.ATTR_USER_ID));
+        event.setClientIp(exchange.getAttributeOrDefault(GatewayAuditGlobalFilter.ATTR_CLIENT_IP, "0.0.0.0"));
+        event.setMethod(exchange.getRequest().getMethod().name());
+        event.setPath(exchange.getRequest().getURI().getPath());
+        event.setMessage(message);
+        event.setDetailJson(detail == null ? null : "{\"reason\":\"" + detail.replace("\"", "'") + "\"}");
+        event.setOccurredAt(LocalDateTime.now());
+        eventPublisher.publishSecurityAlert(MqTopicConstants.TAG_SECURITY_ALERT, event);
+    }
+
+    /**
      * 返回统一 401 JSON 响应。
      */
     private Mono<Void> writeUnauthorizedResponse(ServerHttpResponse response, String message) {
         response.setStatusCode(HttpStatus.UNAUTHORIZED);
         response.getHeaders().setContentType(MediaType.APPLICATION_JSON);
-
         String body = "{\"code\":401,\"message\":\"" + message + "\",\"data\":null}";
         DataBuffer buffer = response.bufferFactory().wrap(body.getBytes(StandardCharsets.UTF_8));
-
         return response.writeWith(Mono.just(buffer));
     }
-
 }

@@ -20,7 +20,6 @@
         >
           <component :is="item.icon" />
           <span>{{ item.label }}</span>
-          <em v-if="item.count !== undefined">{{ item.count }}</em>
         </button>
       </nav>
 
@@ -94,18 +93,11 @@ import {
 import { STORAGE_KEYS } from '../constants'
 import { logout } from '../utils/auth'
 import { userApi } from '../api/user'
-import { subscribeFileDeleting } from '../utils/deletedFiles'
 
 const route = useRoute()
 const router = useRouter()
 const loggingOut = ref(false)
 const sidebarCollapsed = ref(localStorage.getItem('docnexusSidebarCollapsed') === '1')
-const sidebarStats = ref({
-  fileCount: 0,
-  indexedCount: 0,
-  logCount: 0,
-})
-let unsubscribeFileDeleting = null
 let heartbeatTimer = null
 
 const userInfo = computed(() => {
@@ -137,19 +129,16 @@ const toggleSidebar = () => {
 const navItems = computed(() => [
   { label: '首页', icon: House, path: '/workspace' },
   { label: '账户中心', icon: User, path: '/profile' },
-  { label: '文档库与知识图谱', icon: Files, count: sidebarStats.value.fileCount, path: '/knowledge' },
+  { label: '文档库与知识图谱', icon: Files, path: '/knowledge' },
   { label: 'AI 阅读室', icon: Reading, path: '/study' },
-  { label: '日志系统', icon: DocumentChecked, count: sidebarStats.value.logCount, path: '/ai-logs' },
+  { label: '用户日志', icon: DocumentChecked, path: '/ai-logs' },
 ])
 
 const projectSummary = computed(() => (
-  `${sidebarStats.value.fileCount} 份文档，${sidebarStats.value.indexedCount} 份已入库，${sidebarStats.value.logCount} 条 AI 日志。`
+  '进入具体页面后自动从后端读取最新业务数据。'
 ))
 
-const projectProgress = computed(() => {
-  if (!sidebarStats.value.fileCount) return 0
-  return Math.min(100, Math.round((sidebarStats.value.indexedCount / sidebarStats.value.fileCount) * 100))
-})
+const projectProgress = computed(() => 0)
 
 const sendSessionHeartbeat = () => {
   const sessionId = localStorage.getItem(STORAGE_KEYS.SESSION_ID)
@@ -169,11 +158,6 @@ const handleLogout = async () => {
 }
 
 onMounted(() => {
-  unsubscribeFileDeleting = subscribeFileDeleting(() => {
-    sidebarStats.value.fileCount = Math.max(0, sidebarStats.value.fileCount - 1)
-  })
-  // 侧边栏统计接口还未全部实现，暂时不在全局布局里主动请求，
-  // 避免用户进入任意页面时都触发 /files/list、/agent/tasks 的 404 弹窗。
   sendSessionHeartbeat()
   heartbeatTimer = window.setInterval(sendSessionHeartbeat, 10000)
 })
@@ -183,6 +167,5 @@ onUnmounted(() => {
     window.clearInterval(heartbeatTimer)
     heartbeatTimer = null
   }
-  unsubscribeFileDeleting?.()
 })
 </script>

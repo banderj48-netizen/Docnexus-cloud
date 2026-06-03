@@ -1,0 +1,66 @@
+server:
+  port: ${LOG_SERVICE_PORT:8107}
+
+spring:
+  application:
+    name: docnexus-log-service
+
+  datasource:
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    url: ${MYSQL_URL:jdbc:mysql://127.0.0.1:3306/docnexus_cloud?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${MYSQL_USERNAME:root}
+    password: ${MYSQL_PASSWORD:change-me}
+
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      database: ${REDIS_DATABASE:0}
+      timeout: 3s
+
+  cloud:
+    nacos:
+      username: ${NACOS_USERNAME:nacos}
+      password: ${NACOS_PASSWORD:change-me}
+      discovery:
+        server-addr: ${NACOS_SERVER_ADDR:127.0.0.1:8848}
+        namespace: ${NACOS_NAMESPACE:}
+        group: ${NACOS_GROUP:DEFAULT_GROUP}
+
+rocketmq:
+  name-server: ${ROCKETMQ_NAMESRV_ADDR:127.0.0.1:9876}
+  producer:
+    group: ${ROCKETMQ_LOG_PRODUCER_GROUP:docnexus-log-producer-group}
+    send-message-timeout: 3000
+    retry-times-when-send-failed: 2
+
+docnexus:
+  log:
+    # Gateway Topic：消费请求审计、安全告警、限流和 Sentinel block 事件。
+    gateway-topic: ${LOG_GATEWAY_TOPIC:docnexus_gateway_event}
+    # Log Topic：消费各业务服务通过 AOP 投递的业务操作耗时日志。
+    business-topic: ${LOG_BUSINESS_TOPIC:docnexus_log_event}
+    audit-consumer-group: ${LOG_AUDIT_CONSUMER_GROUP:docnexus-log-gateway-audit-consumer-group}
+    security-consumer-group: ${LOG_SECURITY_CONSUMER_GROUP:docnexus-log-security-alert-consumer-group}
+    business-consumer-group: ${LOG_BUSINESS_CONSUMER_GROUP:docnexus-log-business-operation-consumer-group}
+    # 当前实现：普通用户操作摘要缓存 TTL 固定 60 秒；
+    # 业务日志落库后会按 userId 二次删除 Redis 缓存，保证最终一致。
+
+mybatis:
+  mapper-locations: classpath*:com/xyf/docnexuslogservice/mapper/*.xml
+  configuration:
+    map-underscore-to-camel-case: true
+    log-impl: org.apache.ibatis.logging.slf4j.Slf4jImpl
+
+logging:
+  level:
+    com.xyf.docnexuslogservice: info
+    com.xyf.docnexuslogservice.mapper: debug
+    org.mybatis: debug
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info

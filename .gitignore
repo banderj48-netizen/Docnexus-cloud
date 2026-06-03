@@ -2,7 +2,7 @@
 # DocNexus Cloud 项目忽略规则
 # ==============================
 
-# 只上传根目录 ReadMe.md，其它设计过程文档、PDF 导出文档不进入 GitHub
+# 只上传根目录 ReadMe.md，其它设计文档和 PDF 默认只保留本地
 *.md
 !/ReadMe.md
 *.pdf
@@ -15,13 +15,15 @@ target/
 *.war
 *.ear
 
-# 前端依赖和构建产物
+# 前端依赖、缓存和构建产物
 node_modules/
 **/node_modules/
 dist/
 **/dist/
 .vite/
 **/.vite/
+.npm-cache/
+**/.npm-cache/
 
 # Python 运行和缓存产物
 __pycache__/
@@ -37,7 +39,7 @@ venv/
 *.iml
 .vscode/
 
-# 真实配置文件不上传，只上传 application.example.* 示例文件
+# 真实配置文件不上 GitHub，只上传 application.example.* 示例
 **/src/main/resources/application.yml
 **/src/main/resources/application.yaml
 **/src/main/resources/application.properties

@@ -1,0 +1,56 @@
+<?xml version="1.0" encoding="UTF-8" ?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "https://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.xyf.docnexuslogservice.mapper.GatewayAuditLogMapper">
+
+    <insert id="insertIgnore" parameterType="com.xyf.docnexuslogservice.entity.GatewayAuditLog">
+        INSERT IGNORE INTO gateway_audit_log
+        (event_id, request_id, trace_id, user_id, username, client_ip, method, path, route_id,
+         target_service, request_kind, status_code, user_agent, error_message, occurred_at)
+        VALUES
+        (#{eventId}, #{requestId}, #{traceId}, #{userId}, #{username}, #{clientIp}, #{method}, #{path}, #{routeId},
+         #{targetService}, #{requestKind}, #{statusCode}, #{userAgent}, #{errorMessage}, #{occurredAt})
+    </insert>
+
+    <select id="selectPage" resultType="com.xyf.docnexuslogservice.entity.GatewayAuditLog">
+        SELECT *
+        FROM gateway_audit_log
+        <where>
+            <if test="userId != null">AND user_id = #{userId}</if>
+            <if test="path != null and path != ''">AND path LIKE CONCAT('%', #{path}, '%')</if>
+            <if test="statusCode != null">AND status_code = #{statusCode}</if>
+        </where>
+        ORDER BY occurred_at DESC, id DESC
+        LIMIT #{offset}, #{pageSize}
+    </select>
+
+    <select id="count" resultType="long">
+        SELECT COUNT(1)
+        FROM gateway_audit_log
+        <where>
+            <if test="userId != null">AND user_id = #{userId}</if>
+            <if test="path != null and path != ''">AND path LIKE CONCAT('%', #{path}, '%')</if>
+            <if test="statusCode != null">AND status_code = #{statusCode}</if>
+        </where>
+    </select>
+
+    <select id="countByStatusGroup" resultType="map">
+        SELECT
+          CASE
+            WHEN status_code BETWEEN 200 AND 299 THEN 'SUCCESS'
+            WHEN status_code BETWEEN 400 AND 499 THEN 'CLIENT_ERROR'
+            WHEN status_code &gt;= 500 THEN 'SERVER_ERROR'
+            ELSE 'OTHER'
+          END AS name,
+          COUNT(1) AS value
+        FROM gateway_audit_log
+        GROUP BY
+          CASE
+            WHEN status_code BETWEEN 200 AND 299 THEN 'SUCCESS'
+            WHEN status_code BETWEEN 400 AND 499 THEN 'CLIENT_ERROR'
+            WHEN status_code &gt;= 500 THEN 'SERVER_ERROR'
+            ELSE 'OTHER'
+          END
+    </select>
+</mapper>

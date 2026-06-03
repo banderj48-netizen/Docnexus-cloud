@@ -6,6 +6,9 @@ import 'element-plus/dist/index.css'
 import * as ElementPlusIconsVue from '@element-plus/icons-vue'
 import './style.css'
 import './collaboration/autoInit'
+import { clearLegacyStaticDemoSession } from './mock/staticDemo'
+
+clearLegacyStaticDemoSession()
 
 const app = createApp(App)
 

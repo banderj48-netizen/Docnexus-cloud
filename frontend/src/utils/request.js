@@ -6,6 +6,7 @@ import { ElMessage } from 'element-plus'
 import router from '../router'
 import { STORAGE_KEYS } from '../constants'
 import { clearAuthState, refreshAccessToken, rememberAuthMessage } from './session'
+import { createStaticDemoAdapter, isImplementedBackendRequest, isStaticDemoEnabled } from '../mock/staticDemo'
 
 const service = axios.create({
   baseURL: '/api',
@@ -84,6 +85,9 @@ function reportAiMetrics(config, hasError) {
 service.interceptors.request.use(
   config => {
     config._startTime = Date.now()
+    if (isStaticDemoEnabled() && !isImplementedBackendRequest(config)) {
+      config.adapter = createStaticDemoAdapter
+    }
     const token = localStorage.getItem(STORAGE_KEYS.ACCESS_TOKEN)
     if (token) {
       config.headers.Authorization = `Bearer ${token}`

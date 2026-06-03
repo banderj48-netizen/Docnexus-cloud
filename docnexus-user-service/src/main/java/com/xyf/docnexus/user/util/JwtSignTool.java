@@ -19,6 +19,7 @@ import java.security.interfaces.RSAPrivateKey;
 import java.security.interfaces.RSAPublicKey;
 import java.time.Instant;
 import java.util.Date;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -63,6 +64,7 @@ public class JwtSignTool {
         String jwtId = UUID.randomUUID().toString();
 
         String token = JWT.create()
+                .withHeader(Map.of("kid", jwtProperties.getKeyId()))
                 .withIssuer(jwtProperties.getIssuer())
                 .withSubject(String.valueOf(userId))
                 .withJWTId(jwtId)
@@ -77,6 +79,24 @@ public class JwtSignTool {
                 .sign(algorithm);
 
         return new SignedJwt(token, jwtId, issuedAtMillis, expiresAtMillis, tokenVersion);
+    }
+
+    /**
+     * 返回当前 active JWT 密钥 ID。
+     *
+     * <p>JWKS 接口使用该值标识当前公钥，Gateway 会根据 Token Header 中的 kid 找到同一把公钥。</p>
+     */
+    public String currentKeyId() {
+        return jwtProperties.getKeyId();
+    }
+
+    /**
+     * 返回当前 active 公钥。
+     *
+     * <p>该方法只暴露 RSA 公钥，不能用于签发 Token，可安全用于 JWKS 输出。</p>
+     */
+    public RSAPublicKey currentPublicKey() {
+        return loadPublicKey();
     }
 
 
