@@ -1,21 +1,20 @@
 <template>
   <StudioLayout>
-    <div class="nexus-page">
-    <main class="nexus-main">
-      <section class="hero-band">
-        <div class="hero-copy">
-          <span class="hero-eyebrow">Knowledge Library & Map</span>
-          <h1>文档库与知识图谱</h1>
-          <p>集中管理上传文档，调用 Agent 自动解析、切片、向量化与图谱构建，为后续问答 Agent 提供可用知识。</p>
+    <main class="library-page">
+      <section class="library-hero">
+        <div>
+          <span class="hero-eyebrow">Document Library</span>
+          <h1>文档库</h1>
+          <p>集中管理真实上传的企业资料，上传后先保留原文件，用户手动点击解析后再进入知识处理队列。</p>
         </div>
         <div class="hero-actions">
-          <button class="ghost-button" type="button" @click="openFilePicker">
-            <Upload />
-            批量导入
+          <button class="outline-button" type="button" @click="loadFileList">
+            <Refresh />
+            刷新
           </button>
-          <button class="solid-button" type="button" @click="openFilePicker">
+          <button class="primary-button" type="button" @click="openFilePicker">
             <UploadFilled />
-            上传资料
+            上传文档
           </button>
         </div>
         <input
@@ -23,767 +22,430 @@
           class="hidden-input"
           type="file"
           multiple
-          accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,.jpg,.jpeg,.png,.webp,.bmp,.tif,.tiff,.gif"
+          accept=".pdf,.txt,.doc,.docx,.ppt,.pptx,.wps,.wpt,.dps,.dpt,.wpd"
           @change="handleFileChange"
         />
       </section>
 
-      <section class="metric-grid" aria-label="文档库统计">
-        <article v-for="metric in metrics" :key="metric.label" class="metric-card">
-          <span class="metric-icon" :class="metric.tone">
-            <component :is="metric.icon" />
-          </span>
-          <div>
-            <p>{{ metric.label }}</p>
-            <strong>{{ metric.value }}</strong>
-            <small>{{ metric.desc }}</small>
+      <section class="library-toolbar">
+        <div class="stat-pill">
+          <strong>{{ libraryTotal }}</strong>
+          <span>文档总数</span>
+        </div>
+        <div class="stat-pill">
+          <strong>{{ parsingCount }}</strong>
+          <span>解析中</span>
+        </div>
+        <div class="stat-pill">
+          <strong>{{ failedCount }}</strong>
+          <span>解析失败</span>
+        </div>
+        <button class="text-button" type="button" @click="openFilePicker">
+          <Upload />
+          继续上传
+        </button>
+      </section>
+
+      <section v-loading="loading" class="document-grid" aria-label="已上传文档">
+        <article
+          v-for="file in libraryFiles"
+          :key="file.fileId"
+          class="document-card"
+          tabindex="0"
+          @click="openEditor(file)"
+          @keyup.enter="openEditor(file)"
+        >
+          <div class="document-cover" :class="file.coverTone">
+            <component :is="file.icon" />
+            <span>{{ file.typeLabel }}</span>
+          </div>
+          <div class="document-meta">
+            <div class="document-title-row">
+              <h2 :title="file.name">{{ file.name }}</h2>
+              <el-dropdown trigger="click" @click.stop>
+                <button class="more-button" type="button" title="更多操作" @click.stop>
+                  <MoreFilled />
+                </button>
+                <template #dropdown>
+                  <el-dropdown-menu>
+                    <el-dropdown-item @click="downloadFile(file)">
+                      <Download />
+                      下载到本地
+                    </el-dropdown-item>
+                    <el-dropdown-item v-if="canSubmitParse(file)" @click="parseFile(file)">
+                      <Refresh />
+                      解析
+                    </el-dropdown-item>
+                    <el-dropdown-item v-else-if="canRetryParse(file)" @click="parseFile(file)">
+                      <Refresh />
+                      重新解析
+                    </el-dropdown-item>
+                    <el-dropdown-item v-else-if="isRetryExhausted(file)" @click="showParseAlarm">
+                      <WarningFilled />
+                      解析报警
+                    </el-dropdown-item>
+                    <el-dropdown-item class="danger-item" @click="deleteFile(file)">
+                      <Delete />
+                      删除文档
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
+            </div>
+            <p>{{ file.time }}</p>
+            <div class="badge-row">
+              <span class="upload-badge">{{ file.uploadText }}</span>
+              <span v-if="file.showParseBadge" class="parse-badge" :class="file.parseTone">{{ file.parseText }}</span>
+            </div>
           </div>
         </article>
+
+        <div v-if="!loading && !libraryFiles.length" class="empty-library">
+          <Files />
+          <strong>暂无文档</strong>
+          <p>上传 PDF、TXT、Word、PPT 或 WPS 文档后，会在这里展示。</p>
+          <button class="primary-button" type="button" @click="openFilePicker">上传第一份文档</button>
+        </div>
       </section>
 
-      <section class="workbench-grid">
-        <section class="panel upload-panel">
-          <div class="panel-heading">
-            <div>
-              <h2><UploadFilled /> 上传与处理中心</h2>
-              <p>上传文档后，系统将自动进入 Agent 解析流水线。</p>
-            </div>
+      <el-dialog
+        v-model="uploadDialogVisible"
+        title="上传列表"
+        width="720px"
+        :close-on-click-modal="false"
+        :before-close="handleUploadDialogClose"
+      >
+        <div class="upload-dialog-body">
+          <div class="upload-rules">
+            <strong>文件限制</strong>
+            <span>单个文件最大 200MB；小于 5MB 直接上传，5MB 起按至少 5MB 分片上传并支持断点续传；暂不支持图片、视频、Excel 和外链图床。</span>
           </div>
-
-          <button class="drop-zone" type="button" @click="openFilePicker">
-            <Upload />
-            <strong>拖拽文件到此处，或点击上传</strong>
-            <span>支持 PDF、DOCX、PPTX、XLSX、TXT 等格式，单个文件 ≤ 200MB</span>
-          </button>
-
-          <div class="table-block">
-            <div class="section-title">
-              <h3>处理队列</h3>
-              <div class="queue-filter" aria-label="处理队列筛选">
-                <button
-                  v-for="item in queueFilters"
-                  :key="item.value"
-                  type="button"
-                  :class="{ active: activeQueueFilter === item.value }"
-                  @click="activeQueueFilter = item.value"
-                >
-                  {{ item.label }}
-                </button>
+          <div class="upload-list">
+            <article v-for="item in uploadItems" :key="item.id" class="upload-item" :class="item.status">
+              <div class="upload-file-icon" :class="item.coverTone">
+                <component :is="item.icon" />
               </div>
-            </div>
-
-            <div class="data-table queue-table">
-              <div class="table-row table-head">
-                <span>文档名称</span>
-                <span>大小</span>
-                <span>上传时间</span>
-                <span>当前阶段</span>
-                <span>进度</span>
-                <span>操作</span>
-              </div>
-              <div v-for="file in filteredQueueFiles" :key="file.id" class="table-row" :class="[`queue-${file.status}`]">
-                <span class="file-cell">
-                  <i :class="['file-type', file.type.toLowerCase()]">{{ file.type }}</i>
-                  <span class="file-copy">
-                    <strong>{{ file.name }}</strong>
-                    <small v-if="file.errorMessage">{{ file.errorMessage }}</small>
-                  </span>
-                </span>
-                <span>{{ file.size }}</span>
-                <span>{{ file.time }}</span>
-                <span>
-                  <em class="status-pill" :class="file.statusTone">{{ file.stage }}</em>
-                </span>
-                <span class="progress-cell" :class="file.status">
-                  <strong>{{ file.progress }}%</strong>
-                  <i><b :style="{ width: `${file.progress}%` }"></b></i>
-                </span>
-                <span class="row-actions">
-                  <template v-if="file.status === 'failed'">
-                    <button class="text-action primary" type="button" title="重新上传" @click="retryQueueFile(file)">重新上传</button>
-                    <button class="text-action danger" type="button" title="取消" @click="cancelQueueFile(file)">取消</button>
-                  </template>
-                  <template v-else-if="file.status === 'interrupted'">
-                    <button class="text-action primary" type="button" title="继续上传" @click="continueInterruptedUpload(file)">继续上传</button>
-                    <button class="text-action danger" type="button" title="取消" @click="cancelQueueFile(file)">取消</button>
-                  </template>
-                  <template v-else>
-                  <button type="button" :title="file.paused ? '继续处理' : '暂停处理'">
-                    <VideoPlay v-if="file.paused" />
-                    <VideoPause v-else />
+              <div class="upload-copy">
+                <strong :title="item.name">{{ item.name }}</strong>
+                <span>{{ item.sizeText }} · {{ item.statusText }}</span>
+                <em v-if="item.errorMessage">{{ item.errorMessage }}</em>
+                <div class="upload-progress">
+                  <i><b :style="{ width: `${item.progress}%` }"></b></i>
+                  <small>{{ item.progress }}%</small>
+                </div>
+                <div v-if="item.status === 'failed'" class="upload-item-actions">
+                  <button class="mini-action-button" type="button" @click="retryUploadItem(item)">
+                    <Refresh />
+                    重新上传
                   </button>
-                  <button type="button" title="取消任务" @click="cancelQueueFile(file)">
-                    <Close />
+                  <button class="mini-action-button danger" type="button" @click="discardUploadItem(item)">
+                    <Delete />
+                    移除
                   </button>
-                  </template>
-                </span>
+                </div>
               </div>
-            </div>
+            </article>
           </div>
-
-          <div class="table-block library-block">
-            <h3>已上传文档</h3>
-            <div class="data-table library-table">
-              <div class="table-row table-head">
-                <span>文档名称</span>
-                <span>类型</span>
-                <span>上传时间</span>
-                <span>状态</span>
-                <span>知识库</span>
-                <span>图谱</span>
-                <span>操作</span>
-              </div>
-              <div v-for="file in libraryFiles" :key="file.id" class="table-row">
-                <span class="file-cell">
-                  <i :class="['file-type', file.type.toLowerCase()]">{{ file.type }}</i>
-                  <strong>{{ file.name }}</strong>
-                </span>
-                <span>{{ file.type }}</span>
-                <span>{{ file.time }}</span>
-                <span><em class="status-pill" :class="file.statusTone">{{ file.status }}</em></span>
-                <span class="state-cell" :class="file.knowledgeTone">
-                  <CircleCheck />
-                  {{ file.knowledge }}
-                </span>
-                <span class="state-cell" :class="file.graphTone">
-                  <Share />
-                  {{ file.graph }}
-                </span>
-                <span class="row-actions">
-                  <button type="button" title="预览文档" @click="previewFile(file)"><View /></button>
-                  <button type="button" title="下载文档" @click="downloadFile(file)"><Download /></button>
-                  <button type="button" title="更多操作"><MoreFilled /></button>
-                </span>
-              </div>
-            </div>
-            <footer class="table-footer">
-              <span>共 {{ libraryTotal }} 条</span>
-              <button type="button" disabled><ArrowLeft /></button>
-              <button class="page-current" type="button">1</button>
-              <button type="button"><ArrowRight /></button>
-              <select aria-label="每页条数">
-                <option>10 条/页</option>
-                <option>20 条/页</option>
-              </select>
-            </footer>
-          </div>
-        </section>
-
-        <aside class="right-stack">
-          <section class="panel graph-panel">
-            <div class="panel-heading inline">
-              <h2><Connection /> 知识图谱概览</h2>
-              <button class="mini-button" type="button">查看完整图谱</button>
-            </div>
-            <div class="graph-content">
-              <div class="graph-stats">
-                <div>
-                  <small><DataLine /> 主题簇</small>
-                  <strong>26</strong>
-                </div>
-                <div>
-                  <small><Aim /> 核心实体</small>
-                  <strong>1,280</strong>
-                </div>
-                <div>
-                  <small><Connection /> 高维关系</small>
-                  <strong>3,420</strong>
-                </div>
-              </div>
-              <svg class="knowledge-graph" viewBox="0 0 440 250" role="img" aria-label="知识图谱示意">
-                <g class="graph-lines">
-                  <line v-for="edge in graphEdges" :key="edge.id" :x1="edge.x1" :y1="edge.y1" :x2="edge.x2" :y2="edge.y2" />
-                </g>
-                <g v-for="node in graphNodes" :key="node.label" class="graph-node">
-                  <circle :cx="node.x" :cy="node.y" :r="node.main ? 24 : 8" :fill="node.color" />
-                  <text :x="node.x" :y="node.y + (node.main ? 5 : -14)" text-anchor="middle">{{ node.label }}</text>
-                </g>
-              </svg>
-            </div>
-            <div class="graph-legend">
-              <span><i class="legend-topic"></i> 主题簇</span>
-              <span><i class="legend-entity"></i> 实体</span>
-              <span><i class="legend-edge"></i> 关系</span>
-            </div>
-          </section>
-
-          <section class="panel pipeline-panel">
-            <div class="panel-heading inline">
-              <h2><Cpu /> Agent 解析流水线</h2>
-            </div>
-            <div class="pipeline-line">
-              <article v-for="step in pipelineSteps" :key="step.name">
-                <span><Check /></span>
-                <strong>{{ step.name }}</strong>
-                <small>{{ step.desc }}</small>
-              </article>
-            </div>
-            <footer class="pipeline-footer">
-              <span><CircleCheckFilled /> 流水线运行正常，平均处理时长 2分18秒</span>
-              <button class="mini-button" type="button">查看流水线日志</button>
-            </footer>
-          </section>
-
-          <section class="panel recent-panel">
-            <div class="panel-heading inline">
-              <h2><Finished /> 最近完成解析</h2>
-              <button class="mini-button" type="button">查看全部</button>
-            </div>
-            <div class="recent-list">
-              <article v-for="item in recentFiles" :key="item.name">
-                <span class="file-cell">
-                  <i :class="['file-type', item.type.toLowerCase()]">{{ item.type }}</i>
-                  <strong>{{ item.name }}</strong>
-                </span>
-                <time>{{ item.time }}</time>
-                <em><CircleCheckFilled /> {{ item.result }}</em>
-              </article>
-            </div>
-          </section>
-        </aside>
-      </section>
+        </div>
+        <template #footer>
+          <button class="outline-button" type="button" @click="handleUploadDialogClose(() => {})">关闭</button>
+          <button class="primary-button" type="button" @click="handleContinueAdd">继续添加</button>
+        </template>
+      </el-dialog>
     </main>
-    </div>
   </StudioLayout>
 </template>
 
 <script setup>
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
-import StudioLayout from '../components/StudioLayout.vue'
-import { fileApi } from '../api/file'
-import { STORAGE_KEYS } from '../constants'
-import { notifyUserOperationChanged } from '../utils/sidebarStats'
+import { computed, markRaw, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
-  Aim,
-  ArrowLeft,
-  ArrowRight,
-  Check,
-  CircleCheck,
-  CircleCheckFilled,
-  Close,
-  Connection,
-  Cpu,
-  DataLine,
+  Delete,
+  Document,
   Download,
   Files,
-  Finished,
-  Folder,
   MoreFilled,
-  Operation,
-  Share,
+  Notebook,
+  Refresh,
+  Tickets,
   Upload,
   UploadFilled,
-  VideoPause,
-  VideoPlay,
-  View,
+  WarningFilled,
 } from '@element-plus/icons-vue'
-import { ElMessage } from 'element-plus'
+import StudioLayout from '../components/StudioLayout.vue'
+import { fileApi } from '../api/file'
+import { notifyUserOperationChanged } from '../utils/sidebarStats'
 
+const router = useRouter()
 const fileInputRef = ref(null)
-const activeQueueFilter = ref('all')
-const libraryTotal = ref(0)
-const uploading = ref(false)
-const failedUploads = ref([])
-const pendingRecoverRow = ref(null)
-const maxFileSize = 200 * 1024 * 1024
-const multipartThreshold = 100 * 1024 * 1024
-const uploadDraftStorageKey = 'docnexus:file:upload:drafts'
-const supportedExtensions = new Set([
-  'pdf',
-  'doc',
-  'docx',
-  'ppt',
-  'pptx',
-  'xls',
-  'xlsx',
-  'txt',
-  'jpg',
-  'jpeg',
-  'png',
-  'webp',
-  'bmp',
-  'tif',
-  'tiff',
-  'gif',
-])
-
-const queueFilters = [
-  { label: '全部', value: 'all' },
-  { label: '上传中', value: 'uploading' },
-  { label: '待解析', value: 'waiting' },
-  { label: '解析中', value: 'parsing' },
-  { label: '已完成', value: 'done' },
-  { label: '失败', value: 'failed' },
-]
-
-const metrics = computed(() => {
-  const parsingCount = queueFiles.value.filter((file) => file.status === 'parsing').length
-  return [
-    { label: '资料总数', value: String(libraryTotal.value), desc: '已纳入统一管理的文档', icon: Folder, tone: 'green' },
-    { label: '解析中任务', value: String(parsingCount), desc: 'Agent 正在处理的文档', icon: Operation, tone: 'blue' },
-    { label: '知识库切片', value: '0', desc: '等待后续解析服务回写', icon: Files, tone: 'purple' },
-    { label: '图谱实体 / 关系', value: '0 / 0', desc: '等待后续图谱构建回写', icon: Share, tone: 'mint' },
-  ]
-})
-
-const queueFiles = ref([])
-
+const loading = ref(false)
 const libraryFiles = ref([])
+const libraryTotal = ref(0)
+const uploadDialogVisible = ref(false)
+const uploadItems = ref([])
+const uploading = ref(false)
+const currentUpload = ref(null)
+const cancelUploadQueueRequested = ref(false)
 
-const graphNodes = [
-  { label: '产品', x: 230, y: 130, color: '#008d72', main: true },
-  { label: '竞品对手', x: 160, y: 175, color: '#3b82f6' },
-  { label: '用户', x: 105, y: 145, color: '#65c765' },
-  { label: '法规', x: 285, y: 52, color: '#8b5cf6' },
-  { label: '竞品', x: 150, y: 78, color: '#f59e0b' },
-  { label: '需求', x: 352, y: 92, color: '#ef553d' },
-  { label: '市场', x: 330, y: 152, color: '#f59e0b' },
-  { label: '行业', x: 282, y: 186, color: '#65c765' },
-  { label: '案例', x: 365, y: 188, color: '#94a3b8' },
-  { label: '策略', x: 235, y: 35, color: '#3b82f6' },
-]
+const maxFileSize = 200 * 1024 * 1024
+const minChunkSize = 5 * 1024 * 1024
+const supportedExtensions = new Set(['pdf', 'txt', 'doc', 'docx', 'ppt', 'pptx', 'wps', 'wpt', 'dps', 'dpt', 'wpd'])
 
-const graphEdges = graphNodes
-  .filter((node) => !node.main)
-  .map((node, index) => ({ id: index, x1: 230, y1: 130, x2: node.x, y2: node.y }))
-
-const pipelineSteps = [
-  { name: '上传', desc: '文件接收' },
-  { name: '文本抽取', desc: 'OCR / 识别' },
-  { name: '切片', desc: '语义切分' },
-  { name: '向量化', desc: '向量生成' },
-  { name: '图谱构建', desc: '实体关系' },
-]
-
-const recentFiles = [
-  { name: '招标文件.pdf', type: 'PDF', time: '06/01 09:48', result: '已入库并生成 126 个切片' },
-  { name: '客户培训手册.docx', type: 'W', time: '06/01 09:21', result: '已构建知识图谱' },
-  { name: '会议纪要_05-30.txt', type: 'TXT', time: '05/31 22:16', result: '已供问答 Agent 调用' },
-]
-
-const filteredQueueFiles = computed(() => {
-  if (activeQueueFilter.value === 'all') return queueFiles.value
-  return queueFiles.value.filter((file) => file.status === activeQueueFilter.value)
-})
+const parsingCount = computed(() => libraryFiles.value.filter((file) => ['PROCESSING', 'PENDING'].includes(file.parseStatus)).length)
+const failedCount = computed(() => libraryFiles.value.filter((file) => file.parseStatus === 'FAILED').length)
 
 onMounted(() => {
   loadFileList()
-  window.addEventListener('beforeunload', handlePageUnload)
-})
-
-onBeforeUnmount(() => {
-  window.removeEventListener('beforeunload', handlePageUnload)
 })
 
 /**
- * 从后端加载已上传文档，并同步生成“待解析”处理队列。
+ * 加载当前用户已上传文档列表。
  */
 const loadFileList = async () => {
-  const response = await fileApi.getFileList({ pageNum: 1, pageSize: 10, knowledgeBaseId: 'default' })
-  const page = response.data || {}
-  const records = (page.records || []).map(normalizeBackendFile)
-  const uploadedFiles = records.filter((file) => file.uploadStatus === 'UPLOADED')
-  const temporaryFiles = records.filter((file) => file.uploadStatus && file.uploadStatus !== 'UPLOADED')
-  libraryFiles.value = uploadedFiles
-  libraryTotal.value = Number(page.total || libraryFiles.value.length)
-  queueFiles.value = temporaryFiles
-    .map(createQueueRowFromLibrary)
-    .concat(uploadedFiles
-    .filter((file) => ['待解析', '解析中', '上传中', '待上传', '上传失败'].includes(file.knowledge) || file.status === '上传失败')
-    .map(createQueueRowFromLibrary))
+  loading.value = true
+  try {
+    const response = await fileApi.getFileList({ pageNum: 1, pageSize: 50, knowledgeBaseId: 'default' })
+    const page = response.data || {}
+    libraryFiles.value = (page.records || [])
+      .filter((file) => file.uploadStatus === 'UPLOADED')
+      .map(normalizeFile)
+    libraryTotal.value = Number(page.total || libraryFiles.value.length)
+  } catch (error) {
+    ElMessage.error(error?.message || '文档列表加载失败')
+  } finally {
+    loading.value = false
+  }
 }
 
 /**
- * 打开浏览器文件选择器，后续接入后端上传接口时仍复用该入口。
+ * 打开文件选择器。
  */
 const openFilePicker = () => {
   fileInputRef.value?.click()
 }
 
 /**
- * 将用户选择的文件按大小分流到普通上传或分片上传演示流程。
+ * 处理文件选择并加入排队上传列表。
  */
-const handleFileChange = (event) => {
+const handleFileChange = async (event) => {
   const files = Array.from(event.target.files || [])
-  if (!files.length) return
-  if (pendingRecoverRow.value) {
-    continueUploadWithSelectedFile(pendingRecoverRow.value, files[0])
-    pendingRecoverRow.value = null
-    event.target.value = ''
-    return
-  }
-  enqueueUploadFiles(files)
   event.target.value = ''
+  if (!files.length) return
+  uploadDialogVisible.value = true
+  const recoverableMap = await loadRecoverableUploadMap()
+  const rows = files.map((file) => createUploadItem(file, recoverableMap.get(uploadFingerprint(file))))
+  uploadItems.value = [...uploadItems.value, ...rows]
+  processUploadQueue()
 }
 
 /**
- * 将批量选择的文件按顺序逐个上传，避免同时把大文件请求打到后端。
+ * 使用前端互斥锁顺序处理上传队列。
  */
-const enqueueUploadFiles = async (files) => {
-  if (uploading.value) {
-    ElMessage.warning('已有文件正在上传，请稍后再试')
-    return
-  }
+const processUploadQueue = async () => {
+  if (uploading.value) return
   uploading.value = true
-  failedUploads.value = []
-
+  cancelUploadQueueRequested.value = false
   try {
-    for (const file of files) {
-      const invalidReason = validateUploadFile(file)
-      if (invalidReason) {
-        failedUploads.value.push({ file, reason: invalidReason })
+    for (const item of uploadItems.value) {
+      if (cancelUploadQueueRequested.value) break
+      if (item.status !== 'waiting') continue
+      const reason = validateFile(item.file)
+      if (reason) {
+        item.status = 'failed'
+        item.statusText = '校验失败'
+        item.errorMessage = reason
         continue
       }
-      notifyUserOperationChanged()
-      await uploadOneFile(file)
+      await uploadOne(item)
     }
   } finally {
     uploading.value = false
+    currentUpload.value = null
     await loadFileList()
   }
 }
 
 /**
- * 校验上传文件的大小和格式，保证前端先拦截明显不合法的资料。
+ * 上传单个文件并持续回显进度。
  */
-const validateUploadFile = (file) => {
-  const extension = resolveFileExtension(file.name)
-  if (!supportedExtensions.has(extension)) {
-    return '仅支持 PDF、Word、PPT、TXT 和常见图片格式'
-  }
-  if (file.size <= 0) {
-    return '不能上传空文件'
-  }
-  if (file.size > maxFileSize) {
-    return '单个文件不能超过 200MB'
-  }
-  return ''
-}
-
-/**
- * 上传单个文件，并把进度实时写入当前页面的临时行。
- */
-const uploadOneFile = async (file) => {
-  const uploadMode = file.size > multipartThreshold ? 'multipart' : 'normal'
-  const row = createLocalUploadRow(file, uploadMode)
-  queueFiles.value = [createQueueRowFromLibrary(row), ...queueFiles.value]
+const uploadOne = async (item) => {
+  const controller = new AbortController()
+  currentUpload.value = { item, controller }
+  item.status = 'uploading'
+  item.statusText = '上传中'
+  item.progress = 0
+  notifyUserOperationChanged()
 
   try {
-    const response = await fileApi.upload(file, {
+    const response = await fileApi.upload(item.file, {
       knowledgeBaseId: 'default',
-      onSession: ({ uploadId, totalChunks, chunkSize }) => {
-        row.uploadId = uploadId
-        row.totalChunks = totalChunks
-        row.chunkSize = chunkSize
-        saveUploadDraft(row, file)
-        syncQueueRow(row)
+      signal: controller.signal,
+      uploadId: item.uploadId,
+      chunkSize: item.chunkSize,
+      uploadedChunks: item.uploadedChunkIndexes,
+      onSession: ({ uploadId, chunkSize, totalChunks }) => {
+        item.uploadId = uploadId
+        item.chunkSize = chunkSize || item.chunkSize
+        item.totalChunks = totalChunks || item.totalChunks
       },
-      onProgress: ({ percent, mode }) => {
-        row.progress = percent
-        row.status = mode === 'merge' ? '合并中' : uploadMode === 'multipart' ? '分片上传中' : '上传中'
-        row.uploadStatus = mode === 'merge' ? 'COMPLETING' : 'UPLOADING'
-        syncQueueRow(row)
+      onProgress: ({ percent, mode, uploadedChunks, totalChunks }) => {
+        item.progress = percent
+        item.uploadedChunks = uploadedChunks ?? item.uploadedChunks
+        item.totalChunks = totalChunks || item.totalChunks
+        item.statusText = mode === 'merge' ? '合并分片中' : '上传中'
       }
     })
-    row.uploadId = response.data?.uploadId || row.uploadId
-    const uploaded = normalizeBackendFile(response.data?.file)
-    libraryFiles.value = [uploaded, ...libraryFiles.value]
-    libraryTotal.value += 1
-    queueFiles.value = [createQueueRowFromLibrary(uploaded), ...queueFiles.value.filter((item) => item.localId !== row.id && item.uploadId !== row.uploadId)]
-    removeUploadDraft(row.uploadId)
-    ElMessage.success(`${file.name} 已上传成功`)
+    item.uploadId = response.data?.uploadId || item.uploadId
+    item.status = 'success'
+    item.statusText = '上传成功'
+    item.progress = 100
+    ElMessage.success(`${item.name} 上传成功`)
   } catch (error) {
-    row.status = '上传失败'
-    row.uploadStatus = 'UPLOAD_FAILED'
-    row.statusTone = 'red'
-    row.progress = 0
-    row.errorMessage = error?.message || '上传失败，请稍后重试'
-    syncQueueRow(row)
-    failedUploads.value.push({ file, row, reason: row.errorMessage })
+    item.status = controller.signal.aborted ? 'canceled' : 'failed'
+    item.statusText = controller.signal.aborted ? '已取消' : '上传失败'
+    item.errorMessage = controller.signal.aborted ? '用户取消上传' : (error?.message || '上传失败')
+    if (controller.signal.aborted && item.uploadId) {
+      fileApi.cancelUpload(item.uploadId).catch(() => {})
+    }
   }
 }
 
 /**
- * 生成本地上传临时行。
+ * 继续添加文件前清理失败上传项，保证 Redis 临时缓存和页面列表同步消失。
  */
-const createLocalUploadRow = (file, uploadMode) => ({
-  id: `local_${Date.now()}_${Math.random().toString(16).slice(2)}`,
-  fileId: '',
-  uploadId: '',
-  uploadStatus: uploadMode === 'multipart' ? 'UPLOADING' : 'UPLOADING',
-  name: file.name,
-  type: resolveFileType(file.name),
-  size: formatFileSize(file.size),
-  time: '刚刚',
-  status: uploadMode === 'multipart' ? '分片上传中' : '上传中',
-  statusTone: 'blue',
-  knowledge: '待解析',
-  knowledgeTone: 'waiting',
-  graph: '待解析',
-  graphTone: 'waiting',
-  progress: 0,
-  originalFile: file,
-  lastModified: file.lastModified,
-  fileSize: file.size,
-  uploadMode,
-})
-
-/**
- * 基于已上传文档生成处理队列行。
- */
-const createQueueRowFromLibrary = (row) => ({
-  id: `task_${row.id}`,
-  localId: row.id,
-  fileId: row.id,
-  uploadId: row.uploadId,
-  uploadStatus: row.uploadStatus,
-  name: row.name,
-  type: row.type,
-  size: row.size,
-  time: row.time,
-  stage: resolveQueueStage(row),
-  status: resolveQueueStatus(row),
-  statusTone: row.statusTone,
-  progress: row.progress || 0,
-  errorMessage: row.errorMessage || '',
-  originalFile: row.originalFile,
-  fileSize: row.fileSize,
-  lastModified: row.lastModified,
-  totalChunks: row.totalChunks,
-  chunkSize: row.chunkSize,
-  paused: false,
-})
-
-/**
- * 根据文档状态解析队列阶段。
- */
-const resolveQueueStage = (row) => {
-  if (row.uploadStatus === 'UPLOAD_FAILED' || row.status === '上传失败') return '处理失败'
-  if (row.uploadStatus === 'INTERRUPTED' || row.status === '上传中断') return '上传中断'
-  if (row.status !== '已上传' && (row.status.includes('上传') || row.status === '合并中')) return row.status
-  if (row.knowledge === '解析中') return '解析中'
-  if (row.knowledge === '已入库') return '已完成'
-  return '待解析'
-}
-
-/**
- * 根据文档状态解析队列筛选状态。
- */
-const resolveQueueStatus = (row) => {
-  if (row.uploadStatus === 'UPLOAD_FAILED' || row.status === '上传失败') return 'failed'
-  if (row.uploadStatus === 'INTERRUPTED' || row.status === '上传中断') return 'interrupted'
-  if (row.status !== '已上传' && (row.status.includes('上传') || row.status === '合并中')) return 'uploading'
-  if (row.knowledge === '解析中') return 'parsing'
-  if (row.knowledge === '已入库') return 'done'
-  return 'waiting'
-}
-
-/**
- * 把后端文件展示对象转换为当前页面表格字段。
- */
-const normalizeBackendFile = (file = {}) => ({
-  id: file.fileId || file.id || file.uploadId,
-  fileId: file.fileId || file.id || '',
-  uploadId: file.uploadId || '',
-  uploadStatus: file.uploadStatus || 'UPLOADED',
-  name: file.name || file.originalName || '未命名文档',
-  type: file.type || resolveFileType(file.name || file.originalName || ''),
-  size: file.sizeText || formatFileSize(file.fileSize),
-  time: file.timeText || '刚刚',
-  status: file.statusText || resolveUploadStatusText(file.uploadStatus),
-  statusTone: file.statusTone || resolveStatusTone(file.uploadStatus),
-  knowledge: file.knowledgeText || resolveKnowledgeText(file.parseStatus),
-  knowledgeTone: file.knowledgeTone || resolveKnowledgeTone(file.parseStatus),
-  graph: file.graphText || resolveGraphText(file.graphStatus),
-  graphTone: file.graphTone || resolveGraphTone(file.graphStatus),
-  progress: Number(file.progress || 0),
-  errorMessage: file.errorMessage || '',
-  fileSize: Number(file.fileSize || 0),
-})
-
-/**
- * 替换本地上传临时行。
- */
-const replaceLibraryRow = (localId, uploaded) => {
-  libraryFiles.value = libraryFiles.value.map((item) => item.id === localId ? uploaded : item)
-}
-
-/**
- * 同步上传临时行到处理队列。
- */
-const syncQueueRow = (row) => {
-  const nextRow = createQueueRowFromLibrary(row)
-  queueFiles.value = queueFiles.value.map((item) => item.fileId === row.id ? nextRow : item)
-}
-
-/**
- * 重新上传失败队列行。
- */
-const retryQueueFile = async (file) => {
-  if (!file.originalFile) {
-    ElMessage.warning('页面已刷新，请重新选择原文件上传')
-    pendingRecoverRow.value = file
-    openFilePicker()
-    return
-  }
-  await cancelQueueFile(file, false)
-  await enqueueUploadFiles([file.originalFile])
-}
-
-/**
- * 继续上传中断队列行。
- */
-const continueInterruptedUpload = (file) => {
-  pendingRecoverRow.value = file
-  ElMessage.info('请选择同一个本地文件继续上传')
+const handleContinueAdd = async () => {
+  await clearFailedUploadItems()
   openFilePicker()
 }
 
 /**
- * 使用用户重新选择的文件恢复分片上传。
+ * 收集当前上传列表中的失败会话 ID。
  */
-const continueUploadWithSelectedFile = async (row, file) => {
-  if (!isSameRecoverFile(row, file)) {
-    ElMessage.error('请选择与中断任务相同的文件')
+const failedUploadIds = () => uploadItems.value
+  .filter((item) => item.status === 'failed' && item.uploadId)
+  .map((item) => item.uploadId)
+
+/**
+ * 清理失败上传项，后端会同步取消会话、删除 Redis 临时项和 MinIO 临时分片。
+ */
+const clearFailedUploadItems = async () => {
+  const uploadIds = failedUploadIds()
+  if (uploadIds.length) {
+    try {
+      await fileApi.discardFailedUploads(uploadIds)
+    } catch (error) {
+      ElMessage.warning(error?.message || '清理失败上传缓存失败，请稍后重试')
+      return
+    }
+  }
+  uploadItems.value = uploadItems.value.filter((item) => item.status !== 'failed')
+}
+
+/**
+ * 重新上传失败文件；如果后端仍保留分片会话，则优先断点续传或重新 complete。
+ */
+const retryUploadItem = async (item) => {
+  if (uploading.value) {
+    ElMessage.warning('上传队列正在处理，请稍后再重试')
     return
   }
-  if (file.size <= multipartThreshold) {
-    await cancelQueueFile(row, false)
-    await enqueueUploadFiles([file])
-    return
-  }
+  await refreshRetrySession(item)
+  item.status = 'waiting'
+  item.statusText = item.uploadId ? '准备断点续传' : '排队中'
+  item.errorMessage = ''
+  item.progress = item.totalChunks > 0 ? Math.min(99, Math.round((item.uploadedChunks / item.totalChunks) * 100)) : 0
+  processUploadQueue()
+}
 
-  uploading.value = true
-  row.originalFile = file
-  row.status = 'uploading'
-  row.stage = '上传中'
-  row.statusTone = 'blue'
-  row.errorMessage = ''
-  notifyUserOperationChanged()
+/**
+ * 移除单个失败上传项，并清理后端 Redis 临时状态。
+ */
+const discardUploadItem = async (item) => {
+  if (item.uploadId) {
+    try {
+      await fileApi.discardFailedUploads([item.uploadId])
+    } catch (error) {
+      ElMessage.warning(error?.message || '清理失败上传缓存失败，请稍后重试')
+      return
+    }
+  }
+  uploadItems.value = uploadItems.value.filter((row) => row.id !== item.id)
+}
+
+/**
+ * 刷新失败会话的断点信息；旧会话被清理时自动改为全新上传。
+ */
+const refreshRetrySession = async (item) => {
+  if (!item.uploadId) return
   try {
-    const statusResponse = await fileApi.getChunkStatus(row.uploadId)
-    const uploadedChunks = statusResponse.data?.uploadedChunkIndexes || []
-    const response = await fileApi.uploadByChunks(file, {
-      uploadId: row.uploadId,
-      uploadedChunks,
-      knowledgeBaseId: 'default',
-      onProgress: ({ percent, mode }) => {
-        row.progress = percent
-        row.stage = mode === 'merge' ? '合并中' : '分片上传中'
-        row.statusTone = 'blue'
-      }
-    })
-    const uploaded = normalizeBackendFile(response.data?.file)
-    libraryFiles.value = [uploaded, ...libraryFiles.value]
-    libraryTotal.value += 1
-    queueFiles.value = [createQueueRowFromLibrary(uploaded), ...queueFiles.value.filter((item) => item.uploadId !== row.uploadId)]
-    removeUploadDraft(row.uploadId)
-    ElMessage.success(`${file.name} 已继续上传完成`)
-  } catch (error) {
-    row.status = 'failed'
-    row.stage = '处理失败'
-    row.statusTone = 'red'
-    row.errorMessage = error?.message || '继续上传失败，请稍后重试'
-  } finally {
-    uploading.value = false
-  }
-}
-
-/**
- * 取消失败或中断队列行。
- */
-const cancelQueueFile = async (file, showMessage = true) => {
-  queueFiles.value = queueFiles.value.filter((item) => item.id !== file.id)
-  if (file.uploadId) {
-    removeUploadDraft(file.uploadId)
-  }
-  if (showMessage) {
-    ElMessage.success('已取消上传任务')
-  }
-}
-
-/**
- * 判断用户重新选择的文件是否匹配中断任务。
- */
-const isSameRecoverFile = (row, file) => {
-  return row.name === file.name && Number(row.fileSize || 0) === Number(file.size || 0)
-}
-
-/**
- * 浏览器刷新或关闭时尽力发送中断通知。
- */
-const handlePageUnload = () => {
-  const interruptedUploadIds = queueFiles.value
-    .filter((file) => ['uploading', 'interrupted'].includes(file.status) && file.uploadId)
-    .map((file) => file.uploadId)
-  if (!interruptedUploadIds.length) return
-  const token = localStorage.getItem(STORAGE_KEYS.ACCESS_TOKEN) || ''
-  const body = JSON.stringify({ uploadIds: interruptedUploadIds })
-  fetch('/api/files/uploads/interrupt', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/json',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
-    },
-    body,
-    keepalive: true,
-  }).catch(() => {})
-}
-
-/**
- * 保存上传草稿元数据，不保存文件内容。
- */
-const saveUploadDraft = (row, file) => {
-  if (!row.uploadId) return
-  const drafts = readUploadDrafts()
-  drafts[row.uploadId] = {
-    uploadId: row.uploadId,
-    fileName: file.name,
-    fileSize: file.size,
-    lastModified: file.lastModified,
-    knowledgeBaseId: 'default',
-  }
-  localStorage.setItem(uploadDraftStorageKey, JSON.stringify(drafts))
-}
-
-/**
- * 删除上传草稿。
- */
-const removeUploadDraft = (uploadId) => {
-  if (!uploadId) return
-  const drafts = readUploadDrafts()
-  delete drafts[uploadId]
-  localStorage.setItem(uploadDraftStorageKey, JSON.stringify(drafts))
-}
-
-/**
- * 读取上传草稿。
- */
-const readUploadDrafts = () => {
-  try {
-    return JSON.parse(localStorage.getItem(uploadDraftStorageKey) || '{}')
+    const response = await fileApi.getChunkStatus(item.uploadId)
+    const status = response.data?.status
+    if (['CANCELED', 'EXPIRED'].includes(status)) {
+      resetUploadSession(item)
+      return
+    }
+    item.chunkSize = Number(response.data?.chunkSize || item.chunkSize || 0)
+    item.totalChunks = Number(response.data?.totalChunks || item.totalChunks || 0)
+    item.uploadedChunks = Number(response.data?.uploadedChunks || 0)
+    item.uploadedChunkIndexes = response.data?.uploadedChunkIndexes || []
+    if (item.chunkSize < minChunkSize && item.uploadedChunks < item.totalChunks) {
+      await fileApi.discardFailedUploads([item.uploadId]).catch(() => {})
+      resetUploadSession(item)
+    }
   } catch {
-    return {}
+    resetUploadSession(item)
   }
 }
 
 /**
- * 预览文档。
+ * 清空旧上传会话，让失败文件从第一片开始重新上传。
  */
-const previewFile = async (file) => {
-  if (!file.fileId) return
-  notifyUserOperationChanged()
-  const blob = await fileApi.preview(file.fileId)
-  const url = window.URL.createObjectURL(blob)
-  window.open(url, '_blank', 'noopener')
-  window.setTimeout(() => window.URL.revokeObjectURL(url), 30000)
+const resetUploadSession = (item) => {
+  item.uploadId = ''
+  item.chunkSize = 0
+  item.totalChunks = 0
+  item.uploadedChunks = 0
+  item.uploadedChunkIndexes = []
 }
 
 /**
- * 下载文档。
+ * 关闭上传弹窗，上传中时提示并取消当前文件。
+ */
+const handleUploadDialogClose = async (done) => {
+  if (currentUpload.value?.item?.status === 'uploading') {
+    try {
+      await ElMessageBox.confirm('正在上传中，退出将会取消上传，确定要退出么', '取消上传', {
+        confirmButtonText: '确定',
+        cancelButtonText: '继续上传',
+        type: 'warning',
+      })
+      cancelUploadQueueRequested.value = true
+      currentUpload.value.controller.abort()
+      uploadItems.value = uploadItems.value.filter((item) => item.status === 'success')
+      uploadDialogVisible.value = false
+      done?.()
+    } catch {
+      return
+    }
+    return
+  }
+  uploadDialogVisible.value = false
+  done?.()
+}
+
+/**
+ * 打开文档编辑页。
+ */
+const openEditor = (file) => {
+  if (!file.fileId) return
+  router.push(`/files/${file.fileId}/editor`)
+}
+
+/**
+ * 下载当前 MinIO 版本。
  */
 const downloadFile = async (file) => {
-  if (!file.fileId) return
   notifyUserOperationChanged()
   const blob = await fileApi.download(file.fileId)
   const url = window.URL.createObjectURL(blob)
@@ -795,1136 +457,650 @@ const downloadFile = async (file) => {
 }
 
 /**
- * 解析上传状态文案。
+ * 删除文档。
  */
-const resolveUploadStatusText = (status) => {
-  if (status === 'UPLOAD_FAILED') return '上传失败'
-  if (status === 'INTERRUPTED') return '上传中断'
-  if (status === 'UPLOADING') return '上传中'
-  if (status === 'PENDING_UPLOAD') return '待上传'
-  if (status === 'COMPLETING') return '合并中'
-  return '已上传'
+const deleteFile = async (file) => {
+  await ElMessageBox.confirm(`确定删除「${file.name}」吗？`, '删除文档', {
+    confirmButtonText: '删除',
+    cancelButtonText: '取消',
+    type: 'warning',
+  })
+  notifyUserOperationChanged()
+  await fileApi.delete(file.fileId)
+  ElMessage.success('删除成功')
+  await loadFileList()
+}
+
+/**
+ * 手动提交解析或重新解析请求。
+ */
+const parseFile = async (file) => {
+  if (isRetryExhausted(file)) {
+    await showParseAlarm()
+    return
+  }
+  if (file.parseStatus === 'FAILED') {
+    await ElMessageBox.confirm(`解析失败，是否重新解析「${file.name}」？`, '重新解析', {
+      confirmButtonText: '重新解析',
+      cancelButtonText: '取消',
+      type: 'warning',
+    })
+  }
+  notifyUserOperationChanged()
+  await fileApi.reindex(file.fileId)
+  ElMessage.success(file.parseStatus === 'FAILED' ? '已提交重新解析' : '已提交解析')
+  await loadFileList()
+}
+
+/**
+ * 判断文件是否可以首次提交解析。
+ */
+const canSubmitParse = (file) => file.parseStatus === 'NOT_REQUESTED'
+
+/**
+ * 判断文件是否可以重新解析。
+ */
+const canRetryParse = (file) => file.parseStatus === 'FAILED' && Number(file.parseRetryCount || 0) < 1
+
+/**
+ * 判断文件是否已经用尽重新解析机会。
+ */
+const isRetryExhausted = (file) => file.parseStatus === 'FAILED' && Number(file.parseRetryCount || 0) >= 1
+
+/**
+ * 展示解析重试耗尽告警。
+ */
+const showParseAlarm = async () => {
+  await ElMessageBox.alert('请稍后再试', '解析报警', {
+    confirmButtonText: '知道了',
+    type: 'warning',
+  })
+}
+
+/**
+ * 创建上传队列项。
+ */
+const createUploadItem = (file, recoverable = null) => {
+  const meta = resolveTypeMeta(file.name)
+  const uploadedChunks = recoverable?.uploadedChunks || 0
+  const totalChunks = recoverable?.totalChunks || 0
+  return {
+    id: `upload_${Date.now()}_${Math.random().toString(16).slice(2)}`,
+    file,
+    name: file.name,
+    sizeText: formatFileSize(file.size),
+    status: 'waiting',
+    statusText: recoverable?.uploadId ? '已找到断点，等待续传' : '排队中',
+    progress: totalChunks > 0 ? Math.min(99, Math.round((uploadedChunks / totalChunks) * 100)) : 0,
+    uploadId: recoverable?.uploadId || '',
+    chunkSize: recoverable?.chunkSize || 0,
+    uploadedChunks,
+    totalChunks,
+    uploadedChunkIndexes: recoverable?.uploadedChunkIndexes || [],
+    errorMessage: '',
+    ...meta,
+  }
+}
+
+/**
+ * 查询后端可恢复上传会话，并按文件名和大小建立匹配索引。
+ */
+const loadRecoverableUploadMap = async () => {
+  try {
+    const response = await fileApi.getRecoverableUploads()
+    return new Map((response.data || [])
+      .filter(canReuseRecoverableUpload)
+      .map((item) => [`${item.fileName}::${item.fileSize}`, item]))
+  } catch {
+    return new Map()
+  }
+}
+
+/**
+ * 判断后端断点会话是否可复用；旧小分片全量上传完成时仍允许进入 complete 兜底。
+ */
+const canReuseRecoverableUpload = (item) => {
+  const chunkSize = Number(item.chunkSize || 0)
+  const uploadedChunks = Number(item.uploadedChunks || 0)
+  const totalChunks = Number(item.totalChunks || 0)
+  return chunkSize >= minChunkSize || (totalChunks > 0 && uploadedChunks >= totalChunks)
+}
+
+/**
+ * 生成本地文件与后端上传会话的匹配指纹。
+ */
+const uploadFingerprint = (file) => `${file.name}::${file.size}`
+
+/**
+ * 校验文件格式和大小。
+ */
+const validateFile = (file) => {
+  const extension = resolveExtension(file.name)
+  if (!supportedExtensions.has(extension)) return '仅支持 PDF、TXT、Word、PPT、WPS/WPD 文件，不支持图片、视频、Excel 或外链图床'
+  if (file.size <= 0) return '不能上传空文件'
+  if (file.size > maxFileSize) return '单个文件不能超过 200MB'
+  return ''
+}
+
+/**
+ * 规范化后端文件展示字段。
+ */
+const normalizeFile = (file) => {
+  const meta = resolveTypeMeta(file.name || file.originalName || '')
+  return {
+    fileId: file.fileId || file.id,
+    name: file.name || file.originalName || '未命名文档',
+    time: file.timeText || formatDate(file.createdAt),
+    uploadStatus: file.uploadStatus || 'UPLOADED',
+    uploadText: file.statusText || '已上传',
+    parseStatus: normalizeParseStatus(file.parseStatus),
+    parseRetryCount: Number(file.parseRetryCount || 0),
+    showParseBadge: shouldShowParseBadge(file.parseStatus),
+    parseText: resolveParseText(file.parseStatus),
+    parseTone: resolveParseTone(file.parseStatus),
+    ...meta,
+  }
+}
+
+/**
+ * 解析不同文件格式的图标和色调。
+ */
+const resolveTypeMeta = (fileName) => {
+  const ext = resolveExtension(fileName)
+  if (ext === 'pdf') return { icon: markRaw(Document), typeLabel: 'PDF', coverTone: 'pdf' }
+  if (ext === 'txt') return { icon: markRaw(Tickets), typeLabel: 'TXT', coverTone: 'txt' }
+  if (['ppt', 'pptx', 'dps', 'dpt'].includes(ext)) return { icon: markRaw(Notebook), typeLabel: 'PPT', coverTone: 'ppt' }
+  if (['wps', 'wpt', 'wpd'].includes(ext)) return { icon: markRaw(Document), typeLabel: 'WPS', coverTone: 'wps' }
+  return { icon: markRaw(Document), typeLabel: 'WORD', coverTone: 'word' }
+}
+
+/**
+ * 获取文件扩展名。
+ */
+const resolveExtension = (fileName) => {
+  if (!fileName || !fileName.includes('.')) return ''
+  return fileName.split('.').pop().toLowerCase()
+}
+
+/**
+ * 规范化解析状态，空值表示未发起解析。
+ */
+const normalizeParseStatus = (status) => status || 'NOT_REQUESTED'
+
+/**
+ * 判断是否展示第二个解析状态标签。
+ */
+const shouldShowParseBadge = (status) => normalizeParseStatus(status) !== 'NOT_REQUESTED'
+
+/**
+ * 解析状态文案。
+ */
+const resolveParseText = (status) => {
+  if (status === 'PENDING') return '待解析'
+  if (status === 'PROCESSING') return '解析中'
+  if (status === 'SUCCESS') return '已解析'
+  if (status === 'FAILED') return '解析失败'
+  return ''
 }
 
 /**
  * 解析状态色调。
  */
-const resolveStatusTone = (status) => {
-  if (status === 'UPLOAD_FAILED') return 'red'
-  if (status === 'INTERRUPTED') return 'amber'
-  return status === 'UPLOADED' ? 'green' : 'blue'
-}
-
-/**
- * 解析知识库状态文案。
- */
-const resolveKnowledgeText = (status) => {
-  if (status === 'PROCESSING') return '解析中'
-  if (status === 'SUCCESS') return '已入库'
-  if (status === 'FAILED') return '解析失败'
-  return '待解析'
-}
-
-/**
- * 解析知识库状态色调。
- */
-const resolveKnowledgeTone = (status) => {
+const resolveParseTone = (status) => {
+  if (status === 'SUCCESS') return 'success'
+  if (status === 'FAILED') return 'failed'
+  if (status === 'PENDING') return 'waiting'
   if (status === 'PROCESSING') return 'running'
-  if (status === 'SUCCESS') return 'ready'
-  if (status === 'FAILED') return 'failed'
-  return 'waiting'
+  return 'idle'
 }
 
 /**
- * 解析图谱状态文案。
- */
-const resolveGraphText = (status) => {
-  if (status === 'BUILDING') return '构建中'
-  if (status === 'SUCCESS') return '已构建'
-  if (status === 'FAILED') return '构建失败'
-  return '待解析'
-}
-
-/**
- * 解析图谱状态色调。
- */
-const resolveGraphTone = (status) => {
-  if (status === 'BUILDING') return 'running'
-  if (status === 'SUCCESS') return 'ready'
-  if (status === 'FAILED') return 'failed'
-  return 'waiting'
-}
-
-/**
- * 获取文件名扩展名，用于上传白名单校验和类型标识生成。
- */
-const resolveFileExtension = (fileName) => {
-  if (!fileName.includes('.')) return ''
-  return fileName.split('.').pop().toLowerCase()
-}
-
-/**
- * 根据文件名后缀生成表格中的短类型标识，保持截图中的紧凑文件徽标风格。
- */
-const resolveFileType = (fileName) => {
-  const suffix = resolveFileExtension(fileName).toUpperCase() || 'FILE'
-  const shortMap = {
-    DOC: 'W',
-    DOCX: 'W',
-    PPT: 'P',
-    PPTX: 'P',
-    XLS: 'XLS',
-    XLSX: 'XLS',
-    TEXT: 'TXT',
-    JPG: 'IMG',
-    JPEG: 'IMG',
-    PNG: 'IMG',
-    WEBP: 'IMG',
-    BMP: 'IMG',
-    TIF: 'IMG',
-    TIFF: 'IMG',
-    GIF: 'IMG',
-  }
-  return shortMap[suffix] || suffix
-}
-
-/**
- * 把字节数转换为适合表格展示的文件大小文本。
+ * 格式化文件大小。
  */
 const formatFileSize = (size) => {
   if (!size) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
-  let value = Number(size)
+  let value = size
   let index = 0
   while (value >= 1024 && index < units.length - 1) {
     value /= 1024
     index += 1
   }
-  return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`
+  return `${value >= 10 || index === 0 ? value.toFixed(0) : value.toFixed(1)} ${units[index]}`
+}
+
+/**
+ * 格式化上传日期。
+ */
+const formatDate = (value) => {
+  if (!value) return '刚刚'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '刚刚'
+  return `${date.getFullYear()}/${date.getMonth() + 1}/${date.getDate()}`
 }
 </script>
 
 <style scoped>
-.nexus-page {
-  height: calc(100vh - 106px);
-  min-height: 720px;
-  overflow-y: auto;
-  overflow-x: hidden;
+.library-page {
+  min-height: calc(100vh - 72px);
+  padding: 26px 32px 42px;
   background:
-    radial-gradient(circle at 64% 8%, rgba(0, 158, 126, 0.12), transparent 28%),
-    linear-gradient(180deg, #f8fcfb 0%, #f4f8fb 46%, #f7fafc 100%);
-  color: #162033;
+    linear-gradient(135deg, rgba(0, 141, 114, 0.10), rgba(255, 255, 255, 0.72) 38%),
+    #f5faf7;
 }
 
-.nexus-page::-webkit-scrollbar {
-  width: 10px;
-}
-
-.nexus-page::-webkit-scrollbar-track {
-  background: #eaf2f7;
-}
-
-.nexus-page::-webkit-scrollbar-thumb {
-  border: 2px solid #eaf2f7;
-  border-radius: 999px;
-  background: #9fb4c8;
-}
-
-.nexus-topbar {
-  position: sticky;
-  top: 0;
-  z-index: 20;
+.library-hero,
+.library-toolbar {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  height: 72px;
-  padding: 0 clamp(28px, 3.4vw, 64px);
-  border-bottom: 1px solid #e4edf3;
-  background: rgba(255, 255, 255, 0.94);
-  backdrop-filter: blur(14px);
-}
-
-.brand-lockup,
-.user-chip,
-.notice-button,
-.ghost-button,
-.solid-button,
-.mini-button,
-.drop-zone,
-.row-actions button,
-.queue-filter button,
-.table-footer button {
-  border: 0;
-  background: transparent;
-  color: inherit;
-}
-
-.brand-lockup {
-  display: inline-flex;
-  align-items: center;
-  gap: 13px;
-  text-align: left;
-}
-
-.brand-mark {
-  color: #00866d;
-  font-size: 33px;
-  font-weight: 950;
-  line-height: 1;
-}
-
-.brand-lockup strong,
-.brand-lockup small {
-  display: block;
-}
-
-.brand-lockup strong {
-  color: #0e1f35;
-  font-size: 26px;
-  font-weight: 900;
-  letter-spacing: 0;
-}
-
-.brand-lockup small {
-  margin-top: 2px;
-  color: #8493a5;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.topbar-actions,
-.hero-actions,
-.row-actions,
-.table-footer,
-.graph-legend {
-  display: flex;
-  align-items: center;
-}
-
-.topbar-actions {
-  gap: 24px;
-}
-
-.notice-button {
-  position: relative;
-  display: grid;
-  width: 36px;
-  height: 36px;
-  place-items: center;
-  color: #2d3a51;
-}
-
-.notice-button svg {
-  width: 22px;
-  height: 22px;
-}
-
-.notice-button i {
-  position: absolute;
-  top: 6px;
-  right: 6px;
-  width: 8px;
-  height: 8px;
-  border: 2px solid #ffffff;
-  border-radius: 50%;
-  background: #ef3527;
-}
-
-.user-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 11px;
-  font-weight: 800;
-}
-
-.user-chip span {
-  display: grid;
-  width: 46px;
-  height: 46px;
-  place-items: center;
-  border-radius: 50%;
-  background: #dff7eb;
-  color: #00866d;
-  font-size: 22px;
-  font-weight: 950;
-}
-
-.user-chip svg {
-  width: 15px;
-  height: 15px;
-}
-
-.nexus-main {
-  width: min(100%, 1840px);
+  gap: 18px;
+  max-width: 1400px;
   margin: 0 auto;
-  padding: 22px clamp(28px, 3.4vw, 64px) 34px;
 }
 
-.hero-band {
-  position: relative;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  min-height: 128px;
-  gap: 24px;
-  overflow: hidden;
-}
-
-.hero-band::before {
-  content: "";
-  position: absolute;
-  inset: -70px -80px auto 18%;
-  height: 170px;
-  background:
-    radial-gradient(ellipse at center, rgba(0, 156, 128, 0.14), transparent 62%),
-    repeating-radial-gradient(ellipse at center, rgba(0, 156, 128, 0.13) 0 1px, transparent 1px 8px);
-  opacity: 0.75;
-  pointer-events: none;
-}
-
-.hero-copy,
-.hero-actions {
-  position: relative;
-  z-index: 1;
+.library-hero {
+  padding: 22px 0 18px;
 }
 
 .hero-eyebrow {
-  display: inline-flex;
-  align-items: center;
-  min-height: 26px;
-  padding: 0 14px;
-  border-radius: 999px;
-  background: #dff6e9;
-  color: #00795f;
+  display: block;
+  color: #008d72;
+  font-weight: 700;
   font-size: 13px;
-  font-weight: 900;
+  margin-bottom: 8px;
 }
 
-.hero-copy h1 {
-  margin-top: 13px;
-  color: #111b35;
+.library-hero h1 {
+  margin: 0;
   font-size: 34px;
-  line-height: 1.12;
+  color: #12352e;
   letter-spacing: 0;
 }
 
-.hero-copy p {
-  margin-top: 12px;
-  color: #5f7087;
-  font-size: 14px;
-  font-weight: 700;
+.library-hero p {
+  margin: 10px 0 0;
+  color: #5c6f69;
+  font-size: 15px;
+}
+
+.hero-actions,
+.library-toolbar {
+  display: flex;
+  align-items: center;
 }
 
 .hero-actions {
-  gap: 16px;
-  padding-top: 28px;
-}
-
-.ghost-button,
-.solid-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 136px;
-  min-height: 46px;
-  gap: 8px;
-  border-radius: 8px;
-  font-size: 15px;
-  font-weight: 900;
-}
-
-.ghost-button {
-  border: 1px solid #d9e4ee;
-  background: #ffffff;
-  color: #26354d;
-  box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
-}
-
-.solid-button {
-  border: 1px solid #00866d;
-  background: #00866d;
-  color: #ffffff;
-  box-shadow: 0 12px 22px rgba(0, 134, 109, 0.22);
-}
-
-.ghost-button svg,
-.solid-button svg {
-  width: 18px;
-  height: 18px;
-}
-
-.hidden-input {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  opacity: 0;
-  pointer-events: none;
-}
-
-.metric-grid {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: 22px;
-  margin-top: -4px;
-}
-
-.metric-card,
-.panel {
-  border: 1px solid #dce7ee;
-  border-radius: 8px;
-  background: rgba(255, 255, 255, 0.94);
-  box-shadow: 0 14px 34px rgba(15, 23, 42, 0.07);
-}
-
-.metric-card {
-  display: grid;
-  grid-template-columns: 68px minmax(0, 1fr);
-  align-items: center;
-  min-height: 108px;
-  padding: 18px 20px;
-  gap: 14px;
-}
-
-.metric-icon {
-  display: grid;
-  width: 58px;
-  height: 58px;
-  place-items: center;
-  border-radius: 50%;
-}
-
-.metric-icon svg {
-  width: 34px;
-  height: 34px;
-}
-
-.metric-icon.green,
-.metric-icon.mint {
-  background: #ddf7ec;
-  color: #00866d;
-}
-
-.metric-icon.blue {
-  background: #e4efff;
-  color: #3678ef;
-}
-
-.metric-icon.purple {
-  background: #f0e7ff;
-  color: #7c3aed;
-}
-
-.metric-card p,
-.metric-card small {
-  color: #617188;
-  font-weight: 700;
-}
-
-.metric-card p {
-  font-size: 13px;
-}
-
-.metric-card strong {
-  display: block;
-  margin-top: 5px;
-  color: #101b33;
-  font-size: 28px;
-  line-height: 1;
-}
-
-.metric-card small {
-  display: block;
-  margin-top: 8px;
-  font-size: 12px;
-}
-
-.workbench-grid {
-  display: grid;
-  grid-template-columns: minmax(860px, 1.72fr) minmax(420px, 0.96fr);
-  gap: 22px;
-  align-items: start;
-  margin-top: 18px;
-}
-
-.panel {
-  padding: 16px 20px;
-}
-
-.right-stack {
-  display: grid;
-  gap: 16px;
-}
-
-.panel-heading {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 12px;
-}
-
-.panel-heading.inline {
-  align-items: center;
-}
-
-.panel-heading h2,
-.section-title h3,
-.library-block h3 {
-  display: flex;
-  align-items: center;
-  gap: 9px;
-  color: #142039;
-  font-size: 18px;
-  line-height: 1.2;
-}
-
-.panel-heading h2 svg {
-  width: 20px;
-  height: 20px;
-  color: #00866d;
-}
-
-.panel-heading p {
-  margin-top: 5px;
-  color: #6c7b90;
-  font-size: 13px;
-  font-weight: 700;
-}
-
-.drop-zone {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  width: 100%;
-  min-height: 74px;
-  gap: 6px;
-  border: 1px dashed #9daec4;
-  border-radius: 8px;
-  background: #fbfdff;
-  color: #142039;
-}
-
-.drop-zone svg {
-  width: 22px;
-  height: 22px;
-  color: #00866d;
-}
-
-.drop-zone strong {
-  font-size: 15px;
-  font-weight: 900;
-}
-
-.drop-zone span {
-  color: #6c7b90;
-  font-size: 12px;
-  font-weight: 700;
-}
-
-.table-block {
-  margin-top: 16px;
-}
-
-.section-title {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-bottom: 10px;
-}
-
-.queue-filter {
-  display: flex;
-  align-items: center;
   gap: 10px;
 }
 
-.queue-filter button {
-  min-width: 54px;
-  min-height: 28px;
-  padding: 0 12px;
-  border: 1px solid #dce7ee;
-  border-radius: 6px;
-  background: #f9fbfd;
-  color: #34465f;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.queue-filter button.active {
-  border-color: #b8ead7;
-  background: #dff7ec;
-  color: #00795f;
-}
-
-.data-table {
-  overflow: hidden;
-  border: 1px solid #dfe8ef;
+.primary-button,
+.outline-button,
+.text-button {
+  height: 38px;
   border-radius: 8px;
-}
-
-.table-row {
-  display: grid;
-  align-items: center;
-  min-height: 39px;
+  border: 1px solid transparent;
   padding: 0 14px;
-  border-top: 1px solid #e8eef4;
-  color: #1e2a42;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.table-row:first-child {
-  border-top: 0;
-}
-
-.table-head {
-  min-height: 32px;
-  background: #f8fafc;
-  color: #68788f;
-  font-size: 12px;
-}
-
-.queue-table .table-row {
-  grid-template-columns: minmax(220px, 1.55fr) 100px 132px 154px minmax(170px, 1fr) 86px;
-}
-
-.library-table .table-row {
-  grid-template-columns: minmax(250px, 1.7fr) 88px 134px 108px 122px 122px 112px;
-}
-
-.file-cell,
-.state-cell {
   display: inline-flex;
   align-items: center;
-  min-width: 0;
-  gap: 10px;
+  gap: 7px;
+  font-weight: 700;
+  cursor: pointer;
 }
 
-.file-cell strong {
-  overflow: hidden;
-  min-width: 0;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.primary-button {
+  background: #008d72;
+  color: #fff;
+  box-shadow: 0 8px 20px rgba(0, 141, 114, 0.22);
 }
 
-.file-copy {
-  display: grid;
-  min-width: 0;
-  gap: 2px;
+.outline-button {
+  background: #fff;
+  color: #006b58;
+  border-color: #cfe7df;
 }
 
-.file-copy small {
-  overflow: hidden;
-  color: #dc2626;
-  font-size: 11px;
-  font-weight: 800;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+.text-button {
+  background: transparent;
+  color: #008d72;
 }
 
-.file-type {
-  display: inline-grid;
-  min-width: 18px;
-  height: 18px;
-  place-items: center;
-  border-radius: 3px;
-  background: #ef4444;
-  color: #ffffff;
-  font-size: 8px;
-  font-style: normal;
-  font-weight: 950;
-}
-
-.file-type.w {
-  background: #2f7de1;
-}
-
-.file-type.p {
-  background: #f05a28;
-}
-
-.file-type.zip,
-.file-type.txt,
-.file-type.xls {
-  background: #16a67d;
-}
-
-.file-type.img {
-  background: #8b5cf6;
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  min-height: 22px;
-  padding: 0 8px;
-  border: 1px solid currentColor;
-  border-radius: 5px;
-  font-size: 12px;
-  font-style: normal;
-  font-weight: 900;
-}
-
-.status-pill.blue {
-  background: #eaf3ff;
-  color: #2f7de1;
-}
-
-.status-pill.green {
-  background: #dcf8ec;
-  color: #00866d;
-}
-
-.status-pill.purple {
-  background: #f1e8ff;
-  color: #7c3aed;
-}
-
-.status-pill.orange {
-  background: #fff5df;
-  color: #d97706;
-}
-
-.status-pill.red {
-  background: #fff1f2;
-  color: #dc2626;
-}
-
-.status-pill.amber {
-  background: #fff7ed;
-  color: #b45309;
-}
-
-.queue-failed {
-  background: #fff7f7;
-}
-
-.queue-interrupted {
-  background: #fffbeb;
-}
-
-.progress-cell {
-  display: grid;
-  grid-template-columns: 42px minmax(0, 1fr);
-  align-items: center;
-  gap: 10px;
-}
-
-.progress-cell i {
-  display: block;
-  height: 5px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e4ebf1;
-}
-
-.progress-cell b {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: #00866d;
-}
-
-.progress-cell.failed b {
-  background: #dc2626;
-}
-
-.progress-cell.interrupted b {
-  background: #d97706;
-}
-
-.row-actions {
-  gap: 14px;
-}
-
-.row-actions button {
-  display: inline-grid;
-  width: 18px;
-  height: 22px;
-  place-items: center;
-  color: #24324c;
-}
-
-.row-actions .text-action {
-  width: auto;
-  min-width: 54px;
-  height: 26px;
-  padding: 0 8px;
-  border-radius: 5px;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.row-actions .text-action.primary {
-  background: #e8f5ff;
-  color: #0f67b1;
-}
-
-.row-actions .text-action.danger {
-  background: #fff1f2;
-  color: #dc2626;
-}
-
-.row-actions svg {
+.primary-button svg,
+.outline-button svg,
+.text-button svg {
   width: 16px;
   height: 16px;
 }
 
-.state-cell {
-  color: #00866d;
-  font-size: 12px;
-  white-space: nowrap;
+.hidden-input {
+  display: none;
 }
 
-.state-cell svg {
-  width: 15px;
-  height: 15px;
-}
-
-.state-cell.running {
-  color: #2f7de1;
-}
-
-.state-cell.waiting {
-  color: #d97706;
-}
-
-.table-footer {
-  justify-content: flex-end;
-  gap: 10px;
-  margin-top: 14px;
-  color: #40516a;
-  font-size: 13px;
-  font-weight: 800;
-}
-
-.table-footer button,
-.table-footer select {
-  min-width: 34px;
-  height: 30px;
-  border: 1px solid #dce7ee;
-  border-radius: 5px;
-  background: #ffffff;
-  color: #40516a;
-  font-weight: 900;
-}
-
-.table-footer .page-current {
-  border-color: #00866d;
-  background: #00866d;
-  color: #ffffff;
-}
-
-.table-footer select {
-  min-width: 110px;
-  padding: 0 10px;
-}
-
-.graph-panel {
-  min-height: 258px;
-}
-
-.mini-button {
-  min-height: 30px;
-  padding: 0 13px;
-  border: 1px solid #dce7ee;
-  border-radius: 5px;
-  background: #ffffff;
-  color: #22324b;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.graph-content {
-  display: grid;
-  grid-template-columns: 130px minmax(0, 1fr);
-  align-items: center;
-  gap: 14px;
-}
-
-.graph-stats {
-  overflow: hidden;
-  border: 1px solid #e1e9f0;
+.library-toolbar {
+  margin-top: 8px;
+  padding: 14px 18px;
+  border: 1px solid #dcece7;
+  background: rgba(255, 255, 255, 0.82);
   border-radius: 8px;
 }
 
-.graph-stats div {
-  min-height: 58px;
-  padding: 10px 16px;
-  border-top: 1px solid #e1e9f0;
-  background: #fbfdff;
-}
-
-.graph-stats div:first-child {
-  border-top: 0;
-}
-
-.graph-stats small {
+.stat-pill {
   display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  color: #5f756f;
+}
+
+.stat-pill strong {
+  color: #0b6f5d;
+  font-size: 22px;
+}
+
+.document-grid {
+  max-width: 1400px;
+  margin: 22px auto 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 22px;
+}
+
+.document-card {
+  overflow: hidden;
+  border-radius: 8px;
+  background: #fff;
+  border: 1px solid #dfe8e4;
+  box-shadow: 0 16px 36px rgba(33, 73, 64, 0.08);
+  cursor: pointer;
+  transition: transform 0.18s ease, box-shadow 0.18s ease, border-color 0.18s ease;
+}
+
+.document-card:hover,
+.document-card:focus {
+  transform: translateY(-2px);
+  border-color: #9bd2c4;
+  box-shadow: 0 20px 42px rgba(0, 141, 114, 0.15);
+  outline: none;
+}
+
+.document-cover {
+  height: 148px;
+  display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  color: #63738a;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.graph-stats small svg {
-  width: 13px;
-  height: 13px;
-  color: #168dcb;
-}
-
-.graph-stats strong {
-  display: block;
-  margin-top: 5px;
-  color: #10203a;
-  font-size: 18px;
-}
-
-.knowledge-graph {
-  width: 100%;
-  height: 190px;
-}
-
-.graph-lines line {
-  stroke: #83b4ae;
-  stroke-width: 1.5;
-}
-
-.graph-node text {
-  fill: #53637a;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.graph-node:first-of-type text {
-  fill: #ffffff;
-}
-
-.graph-legend {
   justify-content: center;
-  gap: 30px;
-  color: #516279;
-  font-size: 12px;
+  gap: 10px;
+  color: #fff;
+}
+
+.document-cover svg {
+  width: 48px;
+  height: 48px;
+}
+
+.document-cover span {
   font-weight: 800;
+  letter-spacing: 0;
 }
 
-.graph-legend i {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  margin-right: 7px;
-  border-radius: 50%;
+.document-cover.pdf { background: linear-gradient(135deg, #0f9d7f, #91d7c1); }
+.document-cover.word { background: linear-gradient(135deg, #1a8f70, #b6dfce); }
+.document-cover.ppt { background: linear-gradient(135deg, #5fa75c, #dbd79a); }
+.document-cover.txt { background: linear-gradient(135deg, #177c67, #9dcfbd); }
+.document-cover.wps { background: linear-gradient(135deg, #267867, #d5ca7f); }
+
+.document-meta {
+  min-height: 112px;
+  padding: 16px 18px 18px;
+  background: #fff;
 }
 
-.legend-topic {
-  background: #3b82f6;
-}
-
-.legend-entity {
-  background: #8b5cf6;
-}
-
-.legend-edge {
-  width: 18px !important;
-  height: 1px !important;
-  border-radius: 0 !important;
-  background: #83b4ae;
-  vertical-align: middle;
-}
-
-.pipeline-line {
-  position: relative;
+.document-title-row {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
-  gap: 18px;
-  padding: 18px 4px 12px;
+  grid-template-columns: minmax(0, 1fr) 32px;
+  align-items: start;
+  gap: 8px;
 }
 
-.pipeline-line::before {
-  content: "";
-  position: absolute;
-  top: 28px;
-  left: 28px;
-  right: 28px;
-  height: 2px;
-  background: #00866d;
+.document-title-row h2 {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.35;
+  color: #10251f;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
-.pipeline-line article {
-  position: relative;
-  z-index: 1;
-  display: grid;
-  justify-items: center;
-  gap: 5px;
-  text-align: center;
+.more-button {
+  width: 30px;
+  height: 30px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: #8a9692;
+  cursor: pointer;
 }
 
-.pipeline-line span {
-  display: grid;
-  width: 24px;
-  height: 24px;
-  place-items: center;
-  border-radius: 50%;
-  background: #00866d;
-  color: #ffffff;
+.more-button svg {
+  width: 18px;
+  height: 18px;
 }
 
-.pipeline-line svg {
-  width: 14px;
-  height: 14px;
+.document-meta p {
+  margin: 9px 0 10px;
+  color: #687a75;
+  font-size: 14px;
 }
 
-.pipeline-line strong {
-  margin-top: 4px;
-  color: #142039;
-  font-size: 13px;
-}
-
-.pipeline-line small {
-  color: #6c7b90;
-  font-size: 12px;
-  font-weight: 800;
-}
-
-.pipeline-footer {
+.badge-row {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-top: 8px;
-  padding-top: 12px;
-  border-top: 1px solid #e8eef4;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
-.pipeline-footer span {
+.upload-badge,
+.parse-badge {
   display: inline-flex;
   align-items: center;
-  gap: 6px;
-  color: #00866d;
-  font-size: 12px;
-  font-weight: 900;
-}
-
-.pipeline-footer svg {
-  width: 15px;
-  height: 15px;
-}
-
-.recent-list {
-  display: grid;
-  gap: 4px;
-}
-
-.recent-list article {
-  display: grid;
-  grid-template-columns: minmax(170px, 1fr) 100px minmax(168px, 1fr);
-  align-items: center;
-  min-height: 50px;
-  gap: 12px;
-  border-bottom: 1px solid #e8eef4;
-  color: #1e2a42;
+  height: 24px;
+  border-radius: 999px;
+  padding: 0 10px;
   font-size: 13px;
-  font-weight: 800;
+  font-weight: 700;
 }
 
-.recent-list article:last-child {
-  border-bottom: 0;
+.upload-badge {
+  background: #e9f8f1;
+  color: #0a7c62;
 }
 
-.recent-list time {
-  color: #617188;
-  font-size: 12px;
+.parse-badge.waiting {
+  background: #fff8e1;
+  color: #a56900;
 }
 
-.recent-list em {
+.parse-badge.running {
+  background: #e9f5ff;
+  color: #2b6cb0;
+}
+
+.parse-badge.success {
+  background: #e8f7df;
+  color: #3f9a23;
+}
+
+.parse-badge.failed {
+  background: #fff1f0;
+  color: #d24a43;
+}
+
+.danger-item {
+  color: #d24a43;
+}
+
+.empty-library {
+  grid-column: 1 / -1;
+  min-height: 320px;
+  border: 1px dashed #b7d8ce;
+  background: rgba(255, 255, 255, 0.7);
+  border-radius: 8px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  color: #5d746e;
+}
+
+.empty-library svg {
+  width: 52px;
+  height: 52px;
+  color: #008d72;
+}
+
+.empty-library strong {
+  color: #143f35;
+  font-size: 20px;
+}
+
+.empty-library p {
+  margin: 0 0 8px;
+}
+
+.upload-dialog-body {
+  display: grid;
+  gap: 16px;
+}
+
+.upload-rules {
+  display: grid;
+  gap: 6px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #f0faf6;
+  color: #557069;
+}
+
+.upload-rules strong {
+  color: #0a6d5a;
+}
+
+.upload-list {
+  display: grid;
+  gap: 10px;
+  max-height: 420px;
+  overflow: auto;
+}
+
+.upload-item {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
+  padding: 12px;
+  border: 1px solid #e0ebe7;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.upload-file-icon {
+  width: 48px;
+  height: 48px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+}
+
+.upload-file-icon.pdf,
+.upload-file-icon.word,
+.upload-file-icon.ppt,
+.upload-file-icon.txt,
+.upload-file-icon.wps {
+  background: #008d72;
+}
+
+.upload-copy {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.upload-copy strong {
+  color: #17342d;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.upload-copy span,
+.upload-copy em {
+  color: #657872;
+  font-style: normal;
+  font-size: 13px;
+}
+
+.upload-copy em {
+  color: #d24a43;
+}
+
+.upload-progress {
+  display: grid;
+  grid-template-columns: 1fr 42px;
+  gap: 8px;
+  align-items: center;
+}
+
+.upload-progress i {
+  height: 7px;
+  border-radius: 999px;
+  background: #e4eee9;
+  overflow: hidden;
+}
+
+.upload-progress b {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: #008d72;
+}
+
+.upload-progress small {
+  color: #557069;
+  text-align: right;
+}
+
+.upload-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 2px;
+}
+
+.mini-action-button {
+  height: 28px;
+  border-radius: 8px;
+  border: 1px solid #cfe7df;
+  background: #f7fcfa;
+  color: #00765f;
+  padding: 0 10px;
   display: inline-flex;
   align-items: center;
-  gap: 7px;
-  color: #45566e;
+  gap: 5px;
   font-size: 12px;
-  font-style: normal;
+  font-weight: 700;
+  cursor: pointer;
 }
 
-.recent-list em svg {
+.mini-action-button svg {
   width: 14px;
   height: 14px;
-  color: #00866d;
 }
 
-@media (max-width: 1500px) {
-  .nexus-main {
-    padding-inline: 34px;
-  }
-
-  .workbench-grid {
-    grid-template-columns: minmax(760px, 1.55fr) minmax(390px, 0.95fr);
-  }
-
-  .queue-table .table-row {
-    grid-template-columns: minmax(210px, 1.5fr) 86px 112px 142px minmax(144px, 1fr) 72px;
-  }
-
-  .library-table .table-row {
-    grid-template-columns: minmax(220px, 1.6fr) 64px 112px 98px 108px 108px 94px;
-  }
-}
-
-@media (max-width: 1180px) {
-  .metric-grid,
-  .workbench-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .workbench-grid {
-    gap: 16px;
-  }
-}
-
-@media (max-width: 760px) {
-  .nexus-topbar,
-  .hero-band,
-  .section-title,
-  .pipeline-footer {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-
-  .nexus-topbar {
-    position: relative;
-    height: auto;
-    gap: 12px;
-    padding-block: 14px;
-  }
-
-  .brand-lockup strong {
-    font-size: 20px;
-  }
-
-  .nexus-main {
-    padding: 18px;
-  }
-
-  .hero-actions,
-  .queue-filter {
-    flex-wrap: wrap;
-  }
-
-  .metric-grid,
-  .graph-content,
-  .pipeline-line {
-    grid-template-columns: 1fr;
-  }
-
-  .data-table {
-    overflow-x: auto;
-  }
-
-  .queue-table .table-row,
-  .library-table .table-row {
-    min-width: 920px;
-  }
+.mini-action-button.danger {
+  border-color: #f3cbc8;
+  background: #fff7f6;
+  color: #c8443c;
 }
 </style>

@@ -2,6 +2,7 @@ package com.xyf.docnexus.file.service;
 
 import com.xyf.docnexus.common.VO.PageResponse;
 import com.xyf.docnexus.file.dto.FileViewResponse;
+import com.xyf.docnexus.file.entity.DocumentFile;
 
 import java.time.Duration;
 import java.util.List;
@@ -30,6 +31,21 @@ public interface FileCacheService {
      * 写入文件分页缓存。
      */
     void putPage(Long userId, String knowledgeBaseId, long version, int pageNum, int pageSize, PageResponse<FileViewResponse> page);
+
+    /**
+     * 读取单文件元数据缓存。
+     */
+    DocumentFile getFileMeta(Long userId, String fileId);
+
+    /**
+     * 写入单文件元数据缓存。
+     */
+    void putFileMeta(DocumentFile file);
+
+    /**
+     * 原子清理当前用户在文件服务下登记过的全部 Redis 缓存。
+     */
+    long clearUserCaches(Long userId);
 
     /**
      * 尝试获取文件列表回源锁。

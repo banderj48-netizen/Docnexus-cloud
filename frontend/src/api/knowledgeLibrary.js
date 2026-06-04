@@ -25,13 +25,13 @@ export const knowledgeLibraryApi = {
   listDocuments: (params) => request.get('/files/list', { params }),
 
   /**
-   * 普通上传文档资料，适用于 50MB 以内文件。
+   * 普通上传文档资料，适用于小于 5MB 的文件。
    * @param {FormData} formData 包含 file 的表单数据。
    */
   uploadDocument: (formData) => request.post('/files/upload', formData),
 
   /**
-   * 初始化分片上传，适用于大于 50MB 且不超过 100MB 的文件。
+   * 初始化分片上传，适用于 5MB 到 200MB 的文件。
    * @param {Object} data 文件名、大小、类型、知识库等初始化参数。
    */
   initMultipartUpload: (data) => request.post('/files/multipart/init', data),

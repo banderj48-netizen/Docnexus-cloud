@@ -18,6 +18,26 @@ public interface ObjectStorageService {
     StoredObject uploadOriginal(Long userId, String fileId, String fileExt, MultipartFile file);
 
     /**
+     * 上传在线编辑生成的新正式文件版本。
+     */
+    StoredObject uploadEditorVersion(Long userId, String fileId, String fileExt, int versionNumber, byte[] content, String contentType);
+
+    /**
+     * 流式上传在线编辑生成的新正式文件版本。
+     */
+    StoredObject uploadEditorVersion(Long userId, String fileId, String fileExt, int versionNumber, InputStream inputStream, long size, String contentType);
+
+    /**
+     * 覆盖写入已有正式对象。
+     */
+    StoredObject overwriteObject(String bucketName, String objectKey, byte[] content, String contentType);
+
+    /**
+     * 流式覆盖写入已有正式对象。
+     */
+    StoredObject overwriteObject(String bucketName, String objectKey, InputStream inputStream, long size, String contentType);
+
+    /**
      * 上传临时分片。
      */
     StoredObject uploadTempChunk(Long userId, String uploadId, Integer chunkIndex, MultipartFile chunk);

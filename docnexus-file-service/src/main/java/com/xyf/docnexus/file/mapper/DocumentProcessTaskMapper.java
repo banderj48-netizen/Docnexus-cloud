@@ -3,6 +3,8 @@ package com.xyf.docnexus.file.mapper;
 import com.xyf.docnexus.file.entity.DocumentProcessTask;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
+import org.apache.ibatis.annotations.Param;
+import org.apache.ibatis.annotations.Update;
 
 /**
  * 文档处理任务 Mapper。
@@ -23,4 +25,24 @@ public interface DocumentProcessTaskMapper {
             )
             """)
     int insert(DocumentProcessTask task);
+
+    /**
+     * 根据任务 ID 回写解析任务状态。
+     */
+    @Update("""
+            UPDATE document_process_task
+            SET task_status = #{taskStatus},
+                stage = #{stage},
+                progress = #{progress},
+                updated_at = NOW()
+            WHERE task_id = #{taskId}
+              AND user_id = #{userId}
+              AND file_id = #{fileId}
+            """)
+    int updateTaskStatus(@Param("taskId") String taskId,
+                         @Param("userId") Long userId,
+                         @Param("fileId") String fileId,
+                         @Param("taskStatus") String taskStatus,
+                         @Param("stage") String stage,
+                         @Param("progress") Integer progress);
 }

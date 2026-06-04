@@ -30,5 +30,8 @@ public class FileViewResponse {
     private String graphTone;
     private Integer progress;
     private String errorMessage;
+    private Integer parseRetryCount;
+    private Integer currentVersion;
+    private Boolean editable;
     private LocalDateTime createdAt;
 }

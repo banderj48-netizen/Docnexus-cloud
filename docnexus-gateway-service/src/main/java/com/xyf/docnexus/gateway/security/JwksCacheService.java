@@ -21,6 +21,9 @@ import java.util.HashMap;
 import java.util.Map;
 import java.util.Optional;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+
+import reactor.core.publisher.Mono;
 
 /**
  * Gateway JWKS 多级公钥缓存。
@@ -67,6 +70,7 @@ public class JwksCacheService {
 
     private volatile long lastRefreshMillis = 0L;
     private volatile long lastUnknownKidRefreshMillis = 0L;
+    private final AtomicBoolean refreshRunning = new AtomicBoolean(false);
 
     /**
      * 创建 JWKS 多级缓存服务。
@@ -150,64 +154,60 @@ public class JwksCacheService {
      *
      * @param forceRemote 是否跳过 Redis，直接访问 UserService；未知 kid 场景需要强制远程刷新。
      */
-    private synchronized void refreshNow(boolean forceRemote) {
-        if (!forceRemote && loadFromRedis()) {
+    private void refreshNow(boolean forceRemote) {
+        if (!refreshRunning.compareAndSet(false, true)) {
             return;
         }
-        if (!StringUtils.hasText(jwtProperties.getJwks().getUri())) {
-            touchRefreshWindow();
-            return;
-        }
-        try {
-            String jwksJson = webClient.get()
-                    .uri(jwtProperties.getJwks().getUri())
-                    .retrieve()
-                    .bodyToMono(String.class)
-                    .block(IO_TIMEOUT);
-            Map<String, RSAPublicKey> refreshed = parseJwks(jwksJson);
-            if (!refreshed.isEmpty()) {
-                replaceLocalCaches(refreshed);
-                saveToRedis(jwksJson);
-                touchRefreshWindow();
-                log.info("刷新 JWKS 公钥缓存成功，kidCount={}", refreshed.size());
-                return;
-            }
-            touchRefreshWindow();
-            log.warn("刷新 JWKS 公钥缓存得到空结果，将继续使用本地缓存或 fallback 公钥");
-        } catch (Exception exception) {
-            if (forceRemote && loadFromRedis()) {
-                return;
-            }
-            touchRefreshWindow();
-            log.warn("刷新 JWKS 公钥缓存失败，将继续使用本地缓存或 fallback 公钥", exception);
-        }
+        Mono<Boolean> refreshMono = forceRemote
+                ? refreshFromRemote()
+                : loadFromRedisAsync().flatMap(loaded -> loaded ? Mono.just(true) : refreshFromRemote());
+        refreshMono
+                .timeout(IO_TIMEOUT.plusSeconds(1))
+                .doOnError(exception -> {
+                    touchRefreshWindow();
+                    log.warn("刷新 JWKS 公钥缓存失败，将继续使用本地缓存或 fallback 公钥", exception);
+                })
+                .doFinally(signalType -> refreshRunning.set(false))
+                .subscribe(success -> {
+                    if (!success) {
+                        touchRefreshWindow();
+                        log.warn("刷新 JWKS 公钥缓存得到空结果，将继续使用本地缓存或 fallback 公钥");
+                    }
+                });
     }
 
     /**
      * 从 Redis 读取共享 JWKS JSON 并刷新本地缓存。
      */
-    private boolean loadFromRedis() {
+    private Mono<Boolean> loadFromRedisAsync() {
         if (Boolean.FALSE.equals(jwtProperties.getJwks().getRedisCacheEnabled())
                 || redisTemplate == null
                 || !StringUtils.hasText(jwtProperties.getJwks().getRedisCacheKey())) {
-            return false;
+            return Mono.just(false);
         }
-        try {
-            String jwksJson = redisTemplate.opsForValue()
-                    .get(jwtProperties.getJwks().getRedisCacheKey())
-                    .block(IO_TIMEOUT);
-            Map<String, RSAPublicKey> refreshed = parseJwks(jwksJson);
-            if (refreshed.isEmpty()) {
-                return false;
-            }
-            replaceLocalCaches(refreshed);
-            touchRefreshWindow();
-            log.debug("从 Redis 加载 JWKS 公钥缓存成功，kidCount={}", refreshed.size());
-            return true;
-        } catch (Exception exception) {
-            log.debug("从 Redis 加载 JWKS 公钥缓存失败，将尝试远程刷新", exception);
-            return false;
-        }
+        return redisTemplate.opsForValue()
+                .get(jwtProperties.getJwks().getRedisCacheKey())
+                .timeout(IO_TIMEOUT)
+                .map(jwksJson -> {
+                    try {
+                        Map<String, RSAPublicKey> refreshed = parseJwks(jwksJson);
+                        if (refreshed.isEmpty()) {
+                            return false;
+                        }
+                        replaceLocalCaches(refreshed);
+                        touchRefreshWindow();
+                        log.debug("从 Redis 加载 JWKS 公钥缓存成功，kidCount={}", refreshed.size());
+                        return true;
+                    } catch (Exception exception) {
+                        log.debug("从 Redis 解析 JWKS 公钥缓存失败，将尝试远程刷新", exception);
+                        return false;
+                    }
+                })
+                .defaultIfEmpty(false)
+                .onErrorResume(exception -> {
+                    log.debug("从 Redis 加载 JWKS 公钥缓存失败，将尝试远程刷新", exception);
+                    return Mono.just(false);
+                });
     }
 
     /**
@@ -224,10 +224,44 @@ public class JwksCacheService {
             long ttlSeconds = Math.max(60L, jwtProperties.getJwks().getRedisCacheTtlSeconds());
             redisTemplate.opsForValue()
                     .set(jwtProperties.getJwks().getRedisCacheKey(), jwksJson, Duration.ofSeconds(ttlSeconds))
-                    .block(IO_TIMEOUT);
+                    .timeout(IO_TIMEOUT)
+                    .subscribe(
+                            ignored -> log.debug("写入 Redis JWKS 缓存成功"),
+                            exception -> log.debug("写入 Redis JWKS 缓存失败，不影响本地验签", exception)
+                    );
         } catch (Exception exception) {
             log.debug("写入 Redis JWKS 缓存失败，不影响本地验签", exception);
         }
+    }
+
+    /**
+     * 从 UserService 远程 JWKS 接口异步刷新本地缓存。
+     */
+    private Mono<Boolean> refreshFromRemote() {
+        if (!StringUtils.hasText(jwtProperties.getJwks().getUri())) {
+            touchRefreshWindow();
+            return Mono.just(true);
+        }
+        return webClient.get()
+                .uri(jwtProperties.getJwks().getUri())
+                .retrieve()
+                .bodyToMono(String.class)
+                .timeout(IO_TIMEOUT)
+                .map(jwksJson -> {
+                    try {
+                        Map<String, RSAPublicKey> refreshed = parseJwks(jwksJson);
+                        if (refreshed.isEmpty()) {
+                            return false;
+                        }
+                        replaceLocalCaches(refreshed);
+                        saveToRedis(jwksJson);
+                        touchRefreshWindow();
+                        log.info("刷新 JWKS 公钥缓存成功，kidCount={}", refreshed.size());
+                        return true;
+                    } catch (Exception exception) {
+                        throw new IllegalStateException("解析远程 JWKS 公钥失败", exception);
+                    }
+                });
     }
 
     /**

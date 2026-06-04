@@ -1,6 +1,7 @@
 package com.xyf.docnexus.file.util;
 
 import java.io.InputStream;
+import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 
 /**
@@ -25,6 +26,18 @@ public final class HashUtils {
             return toHex(digest.digest());
         } catch (Exception exception) {
             throw new IllegalStateException("计算文件 SHA-256 失败", exception);
+        }
+    }
+
+    /**
+     * 计算 UTF-8 字符串 SHA-256，用于判断在线编辑内容是否发生变化。
+     */
+    public static String sha256(String text) {
+        try {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            return toHex(digest.digest((text == null ? "" : text).getBytes(StandardCharsets.UTF_8)));
+        } catch (Exception exception) {
+            throw new IllegalStateException("计算文本 SHA-256 失败", exception);
         }
     }
 

@@ -15,6 +15,7 @@ import java.util.List;
 public class UploadStatusResponse {
     private String uploadId;
     private String status;
+    private Long chunkSize;
     private Integer uploadedChunks;
     private Integer totalChunks;
     private List<Integer> uploadedChunkIndexes;

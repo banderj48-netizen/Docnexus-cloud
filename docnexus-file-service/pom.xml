@@ -73,6 +73,12 @@
             <artifactId>rocketmq-spring-boot-starter</artifactId>
         </dependency>
 
+        <!-- OpenFeign：后续解析 MQ Consumer 调用 AI 服务的文档解析接口 -->
+        <dependency>
+            <groupId>org.springframework.cloud</groupId>
+            <artifactId>spring-cloud-starter-openfeign</artifactId>
+        </dependency>
+
         <!-- 参数校验：上传初始化请求和分页参数校验 -->
         <dependency>
             <groupId>org.springframework.boot</groupId>
@@ -89,6 +95,18 @@
         <dependency>
             <groupId>com.squareup.okhttp3</groupId>
             <artifactId>okhttp-jvm</artifactId>
+        </dependency>
+
+        <!-- Apache POI：用于真实抽取 DOCX / PPTX 文档内容，避免前端展示假数据 -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-ooxml</artifactId>
+        </dependency>
+
+        <!-- Apache POI Scratchpad：预留 DOC / PPT 老格式抽取能力，转换失败时返回明确错误 -->
+        <dependency>
+            <groupId>org.apache.poi</groupId>
+            <artifactId>poi-scratchpad</artifactId>
         </dependency>
     </dependencies>
 

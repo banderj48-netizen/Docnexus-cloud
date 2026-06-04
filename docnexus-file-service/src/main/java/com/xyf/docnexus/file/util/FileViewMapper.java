@@ -38,8 +38,11 @@ public final class FileViewMapper {
         response.setKnowledgeTone(resolveParseTone(file.getParseStatus()));
         response.setGraphText(resolveGraphText(file.getGraphStatus()));
         response.setGraphTone(resolveGraphTone(file.getGraphStatus()));
-        response.setProgress("PENDING".equals(file.getParseStatus()) ? 0 : 100);
+        response.setProgress(resolveProgress(file.getParseStatus()));
         response.setErrorMessage(file.getErrorMessage());
+        response.setParseRetryCount(file.getParseRetryCount() == null ? 0 : file.getParseRetryCount());
+        response.setCurrentVersion(file.getCurrentVersion() == null ? 1 : file.getCurrentVersion());
+        response.setEditable(file.getEditable() != null && file.getEditable() == 1);
         response.setCreatedAt(file.getCreatedAt());
         return response;
     }
@@ -66,10 +69,12 @@ public final class FileViewMapper {
      */
     private static String resolveParseText(String parseStatus) {
         return switch (parseStatus == null ? "" : parseStatus) {
+            case "NOT_REQUESTED" -> "未发起解析";
+            case "PENDING" -> "待解析";
             case "PROCESSING" -> "解析中";
-            case "SUCCESS" -> "已入库";
+            case "SUCCESS" -> "已解析";
             case "FAILED" -> "解析失败";
-            default -> "待解析";
+            default -> "未发起解析";
         };
     }
 
@@ -78,10 +83,23 @@ public final class FileViewMapper {
      */
     private static String resolveParseTone(String parseStatus) {
         return switch (parseStatus == null ? "" : parseStatus) {
+            case "NOT_REQUESTED" -> "idle";
+            case "PENDING" -> "waiting";
             case "PROCESSING" -> "running";
             case "SUCCESS" -> "ready";
             case "FAILED" -> "failed";
-            default -> "waiting";
+            default -> "idle";
+        };
+    }
+
+    /**
+     * 解析列表进度展示值。
+     */
+    private static Integer resolveProgress(String parseStatus) {
+        return switch (parseStatus == null ? "" : parseStatus) {
+            case "PENDING", "NOT_REQUESTED" -> 0;
+            case "PROCESSING" -> 50;
+            default -> 100;
         };
     }
 

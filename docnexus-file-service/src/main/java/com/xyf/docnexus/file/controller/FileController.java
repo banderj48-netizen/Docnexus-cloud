@@ -38,7 +38,7 @@ public class FileController {
     }
 
     /**
-     * 普通上传文件，适用于 100MB 以内的文件。
+     * 普通上传文件，适用于小于 5MB 的文件。
      */
     @BusinessOperationLog(module = "文件服务", functionName = "上传文档", operationType = "UPLOAD",
             operationName = "上传文档", triggerType = "USER_ACTION", operationSource = "FRONTEND", userVisible = true)
@@ -50,7 +50,7 @@ public class FileController {
     }
 
     /**
-     * 初始化分片上传，适用于 100MB 到 200MB 的文件。
+     * 初始化分片上传，适用于 5MB 到 200MB 的文件。
      */
     @BusinessOperationLog(module = "文件服务", functionName = "初始化分片上传", operationType = "UPLOAD",
             operationName = "初始化分片上传", triggerType = "USER_ACTION", operationSource = "FRONTEND", userVisible = true)
@@ -91,7 +91,7 @@ public class FileController {
             operationName = "查询上传状态", triggerType = "SYSTEM_POLLING", operationSource = "FRONTEND", userVisible = false)
     @GetMapping("/multipart/status/{uploadId}")
     public ApiResponse<UploadStatusResponse> multipartStatus(@RequestHeader("X-User-Id") Long userId,
-                                                             @PathVariable String uploadId) {
+                                                             @PathVariable("uploadId") String uploadId) {
         return ApiResponse.success(fileService.status(userId, uploadId));
     }
 
@@ -102,7 +102,7 @@ public class FileController {
             operationName = "取消上传", triggerType = "USER_ACTION", operationSource = "FRONTEND", userVisible = true)
     @PostMapping("/multipart/cancel/{uploadId}")
     public ApiResponse<Void> cancelMultipart(@RequestHeader("X-User-Id") Long userId,
-                                             @PathVariable String uploadId) {
+                                             @PathVariable("uploadId") String uploadId) {
         fileService.cancel(userId, uploadId);
         return ApiResponse.success("已取消上传", null);
     }
@@ -170,7 +170,7 @@ public class FileController {
             operationName = "下载文档", triggerType = "USER_ACTION", operationSource = "FRONTEND", userVisible = true)
     @GetMapping("/download/{fileId}")
     public ResponseEntity<InputStreamResource> download(@RequestHeader("X-User-Id") Long userId,
-                                                        @PathVariable String fileId) {
+                                                        @PathVariable("fileId") String fileId) {
         return fileService.download(userId, fileId, false);
     }
 
@@ -181,7 +181,7 @@ public class FileController {
             operationName = "预览文档", triggerType = "USER_ACTION", operationSource = "FRONTEND", userVisible = true)
     @GetMapping("/preview/{fileId}")
     public ResponseEntity<InputStreamResource> preview(@RequestHeader("X-User-Id") Long userId,
-                                                       @PathVariable String fileId) {
+                                                       @PathVariable("fileId") String fileId) {
         return fileService.download(userId, fileId, true);
     }
 
@@ -192,8 +192,20 @@ public class FileController {
             operationName = "删除文档", triggerType = "USER_ACTION", operationSource = "FRONTEND", userVisible = true)
     @DeleteMapping("/{fileId}")
     public ApiResponse<Void> delete(@RequestHeader("X-User-Id") Long userId,
-                                    @PathVariable String fileId) {
+                                    @PathVariable("fileId") String fileId) {
         fileService.delete(userId, fileId);
         return ApiResponse.success("删除成功", null);
+    }
+
+    /**
+     * 用户手动提交文件解析或重新解析。
+     */
+    @BusinessOperationLog(module = "文件服务", functionName = "文档解析", operationType = "UPDATE",
+            operationName = "提交文档解析", triggerType = "USER_ACTION", operationSource = "FRONTEND", userVisible = true)
+    @PostMapping("/{fileId}/reindex")
+    public ApiResponse<Void> reindex(@RequestHeader("X-User-Id") Long userId,
+                                     @PathVariable("fileId") String fileId) {
+        fileService.reindex(userId, fileId);
+        return ApiResponse.success("已提交解析", null);
     }
 }

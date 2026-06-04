@@ -17,6 +17,8 @@ public class FileServiceProperties {
     private Minio minio = new Minio();
     private Upload upload = new Upload();
     private Cache cache = new Cache();
+    private OnlyOffice onlyoffice = new OnlyOffice();
+    private Internal internal = new Internal();
 
     @Data
     public static class Minio {
@@ -30,7 +32,7 @@ public class FileServiceProperties {
     @Data
     public static class Upload {
         private long maxSizeBytes = 200L * 1024 * 1024;
-        private long multipartThresholdBytes = 100L * 1024 * 1024;
+        private long multipartThresholdBytes = 5L * 1024 * 1024;
         private long chunkSizeBytes = 10L * 1024 * 1024;
         private long sessionExpireHours = 24;
     }
@@ -41,8 +43,29 @@ public class FileServiceProperties {
         private long libraryEmptyTtlSeconds = 300;
         private long libraryJitterSeconds = 900;
         private long libraryVersionTtlSeconds = 86400;
+        private long fileMetaTtlSeconds = 1800;
+        private long userCacheSetTtlSeconds = 172800;
         private long lockTtlSeconds = 5;
         private long lockWaitMillis = 80;
         private int lockWaitAttempts = 8;
+    }
+
+    @Data
+    public static class OnlyOffice {
+        private boolean enabled = true;
+        private String publicUrl = "http://127.0.0.1:8090";
+        private String internalUrl = "http://127.0.0.1:8090";
+        private String callbackBaseUrl = "http://127.0.0.1:8088";
+        private String jwtSecret = "docnexus-onlyoffice-dev-secret";
+        private long sourceTokenTtlSeconds = 3600;
+        private long callbackTokenTtlSeconds = 604800;
+        private long configTokenTtlSeconds = 3600;
+        private int callbackDownloadTimeoutSeconds = 60;
+        private int forceSaveWaitSeconds = 45;
+    }
+
+    @Data
+    public static class Internal {
+        private String callbackToken = "change-me";
     }
 }

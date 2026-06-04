@@ -89,11 +89,18 @@ CREATE TABLE IF NOT EXISTS `document_file` (
   `bucket_name` VARCHAR(128) NOT NULL COMMENT 'MinIO bucket 名称',
   `object_key` VARCHAR(512) NOT NULL COMMENT 'MinIO 对象 key',
   `upload_status` VARCHAR(32) NOT NULL DEFAULT 'UPLOADED' COMMENT '上传状态：UPLOADING / UPLOADED / UPLOAD_FAILED / CANCELED / DELETED',
+  `parse_status` VARCHAR(32) NOT NULL DEFAULT 'NOT_REQUESTED' COMMENT '解析状态：NOT_REQUESTED / PENDING / PROCESSING / SUCCESS / FAILED',
+  `index_status` VARCHAR(32) NOT NULL DEFAULT 'NONE' COMMENT '索引状态：NONE / PENDING / PROCESSING / SUCCESS / FAILED',
   `knowledge_status` VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '知识库状态：PENDING / INDEXING / INDEXED / FAILED',
   `graph_status` VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '图谱状态：PENDING / BUILDING / BUILT / FAILED',
   `summary` TEXT COMMENT '后续 Python Agent 回写的摘要',
   `keywords_json` TEXT COMMENT '后续 Python Agent 回写的关键词 JSON',
   `error_message` VARCHAR(1024) DEFAULT NULL COMMENT '上传、解析或索引失败原因',
+  `parse_retry_count` INT NOT NULL DEFAULT 0 COMMENT '用户手动重新解析次数',
+  `current_version` INT NOT NULL DEFAULT 1 COMMENT '当前文件版本号',
+  `editable` TINYINT NOT NULL DEFAULT 0 COMMENT '是否支持在线编辑',
+  `content_hash` VARCHAR(64) DEFAULT NULL COMMENT '当前编辑内容 SHA-256',
+  `last_saved_at` DATETIME DEFAULT NULL COMMENT '最近手动保存时间',
   `deleted` TINYINT NOT NULL DEFAULT 0 COMMENT '软删除标记：0 未删除，1 已删除',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -187,6 +194,40 @@ CREATE TABLE IF NOT EXISTS `document_process_task` (
     FOREIGN KEY (`user_id`) REFERENCES `user_account` (`id`)
     ON DELETE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档处理任务表';
+
+CREATE TABLE IF NOT EXISTS `document_file_content` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `file_id` VARCHAR(64) NOT NULL COMMENT '文件 ID',
+  `user_id` BIGINT NOT NULL COMMENT '用户 ID',
+  `version_number` INT NOT NULL COMMENT '对应 document_file.current_version',
+  `content_format` VARCHAR(32) NOT NULL COMMENT 'HTML / TEXT / PDF_PREVIEW',
+  `content_html` MEDIUMTEXT COMMENT '安全 HTML 内容',
+  `plain_text` MEDIUMTEXT COMMENT '纯文本内容',
+  `content_hash` VARCHAR(64) NOT NULL COMMENT '内容 SHA-256',
+  `source_bucket` VARCHAR(128) NOT NULL COMMENT '来源 MinIO bucket',
+  `source_object_key` VARCHAR(512) NOT NULL COMMENT '来源 MinIO object key',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_document_file_content_file_version` (`file_id`, `version_number`),
+  KEY `idx_document_file_content_user_file` (`user_id`, `file_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档在线查看内容快照表';
+
+CREATE TABLE IF NOT EXISTS `document_content_revision_log` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `event_id` VARCHAR(64) NOT NULL COMMENT '保存事件 ID',
+  `file_id` VARCHAR(64) NOT NULL COMMENT '文件 ID',
+  `user_id` BIGINT NOT NULL COMMENT '用户 ID',
+  `old_version` INT NOT NULL COMMENT '旧版本号',
+  `new_version` INT NOT NULL COMMENT '新版本号',
+  `old_object_key` VARCHAR(512) NOT NULL COMMENT '旧 MinIO 对象',
+  `new_object_key` VARCHAR(512) NOT NULL COMMENT '新 MinIO 对象',
+  `content_hash` VARCHAR(64) NOT NULL COMMENT '新内容 SHA-256',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_document_revision_event` (`event_id`),
+  KEY `idx_document_revision_file` (`file_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档保存覆盖日志表';
 
 -- =========================================================
 -- 三、知识图谱第一阶段展示缓存表

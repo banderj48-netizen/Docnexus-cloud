@@ -135,6 +135,7 @@
             <span>发起时间</span>
             <span>业务功能</span>
             <span>操作名称</span>
+            <span>触发方式</span>
             <span>结果</span>
             <span>告警信息</span>
             <span>耗时</span>
@@ -148,6 +149,7 @@
             <span>{{ formatTime(row.occurredAt || row.createdAt) }}</span>
             <strong>{{ row.functionName || row.module || '-' }}</strong>
             <em>{{ row.operationName || '-' }}</em>
+            <span class="trigger-pill">{{ resolveTriggerText(row.triggerType) }}</span>
             <span class="status-pill" :class="{ failed: !row.success }">{{ row.success ? '成功' : '失败' }}</span>
             <span class="alert-cell">{{ row.alertMessage || '-' }}</span>
             <span>{{ row.durationMs == null ? '-' : `${row.durationMs} ms` }}</span>
@@ -343,6 +345,11 @@ const handleSuccessSelect = async () => {
  * 格式化后端 LocalDateTime。
  */
 const formatTime = value => (value ? String(value).replace('T', ' ').slice(0, 19) : '-')
+
+/**
+ * 解析触发方式展示文案。
+ */
+const resolveTriggerText = (triggerType) => (triggerType === 'USER_ACTION' ? '用户点击' : '系统触发')
 
 onMounted(() => refreshAll(true))
 </script>
@@ -595,7 +602,7 @@ onMounted(() => refreshAll(true))
 .log-table-head,
 .log-row {
   display: grid;
-  grid-template-columns: 170px minmax(120px, 1fr) minmax(150px, 1.1fr) 80px minmax(160px, 1.2fr) 90px;
+  grid-template-columns: 170px minmax(120px, 1fr) minmax(150px, 1.1fr) 82px 80px minmax(160px, 1.2fr) 90px;
   gap: 12px;
   align-items: center;
   padding: 12px 14px;
@@ -626,6 +633,16 @@ onMounted(() => refreshAll(true))
   border-radius: 999px;
   background: #e9f8f1;
   color: #167b52;
+  text-align: center;
+  padding: 5px 0;
+  font-weight: 700;
+}
+
+.trigger-pill {
+  width: 72px;
+  border-radius: 999px;
+  background: #edf8f3;
+  color: #157354;
   text-align: center;
   padding: 5px 0;
   font-weight: 700;

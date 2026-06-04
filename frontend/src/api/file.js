@@ -3,9 +3,11 @@
  */
 import request from '../utils/request'
 
-const NORMAL_UPLOAD_LIMIT = 100 * 1024 * 1024
+const MB = 1024 * 1024
+const DIRECT_UPLOAD_LIMIT = 5 * MB
 const MAX_UPLOAD_LIMIT = 200 * 1024 * 1024
-const CHUNK_SIZE = 10 * 1024 * 1024
+const MIN_CHUNK_SIZE = 5 * MB
+const MAX_DYNAMIC_CHUNK_SIZE = 10 * MB
 
 /**
  * 主动检查上传是否已被页面离开或用户取消中止，避免继续上传后续分片。
@@ -15,6 +17,17 @@ const throwIfUploadAborted = (signal) => {
     const error = new Error('上传已中止')
     error.name = 'AbortError'
     throw error
+}
+
+/**
+ * 按企业上传策略计算分片大小。
+ *
+ * 小于 5MB 的文件走普通上传；5MB 以上至少拆成 5MB 分片，
+ * 单片大小不超过 10MB，避免 MinIO 服务端合并时遇到非末尾分片小于 5MiB 的限制。
+ */
+const resolveChunkSize = (rawFile) => {
+    if (rawFile.size < DIRECT_UPLOAD_LIMIT) return 0
+    return Math.ceil(Math.max(MIN_CHUNK_SIZE, Math.min(rawFile.size / 5, MAX_DYNAMIC_CHUNK_SIZE)))
 }
 
 export const fileApi = {
@@ -51,7 +64,7 @@ export const fileApi = {
         if (rawFile.size > MAX_UPLOAD_LIMIT) {
             return Promise.reject(new Error('单个文件最大只能上传 200MB'))
         }
-        if (rawFile.size > NORMAL_UPLOAD_LIMIT) {
+        if (rawFile.size >= DIRECT_UPLOAD_LIMIT) {
             return fileApi.uploadByChunks(rawFile, options)
         }
         const formData = new FormData()
@@ -62,9 +75,8 @@ export const fileApi = {
 
         return request.post('/files/upload', formData, {
             signal: options.signal,
-            // 更加健壮的进度条监听
+            // 复用原 DocAI-main 的 Axios 上传进度思路，小文件由浏览器真实上传事件驱动。
             onUploadProgress: (progressEvent) => {
-                // 如果后端没返回总大小，我们设为 0
                 const total = progressEvent.total || 0;
                 const loaded = progressEvent.loaded || 0;
 
@@ -88,7 +100,12 @@ export const fileApi = {
         if (rawFile.size > MAX_UPLOAD_LIMIT) {
             throw new Error('单个文件最大只能上传 200MB')
         }
-        let totalChunks = Math.ceil(rawFile.size / CHUNK_SIZE)
+        let chunkSize = Number(options.chunkSize || resolveChunkSize(rawFile))
+        if (!chunkSize || chunkSize <= 0) {
+            chunkSize = MIN_CHUNK_SIZE
+        }
+        chunkSize = Math.max(MIN_CHUNK_SIZE, chunkSize)
+        let totalChunks = Math.ceil(rawFile.size / chunkSize)
         let uploadId = options.uploadId || ''
         let uploadedSet = new Set(options.uploadedChunks || [])
 
@@ -98,19 +115,21 @@ export const fileApi = {
                 fileName: rawFile.name,
                 fileSize: rawFile.size,
                 mimeType: rawFile.type || 'application/octet-stream',
-                chunkSize: CHUNK_SIZE,
+                chunkSize,
                 totalChunks,
                 knowledgeBaseId: options.knowledgeBaseId || 'default'
             }, { signal: options.signal })
             uploadId = initRes.data.uploadId
+            chunkSize = Number(initRes.data.chunkSize || chunkSize)
             totalChunks = initRes.data.totalChunks || totalChunks
             uploadedSet = new Set(initRes.data.uploadedChunks || [])
-            options.onSession?.({ uploadId, totalChunks, chunkSize: CHUNK_SIZE })
+            options.onSession?.({ uploadId, totalChunks, chunkSize })
         } else {
             const statusRes = await fileApi.getChunkStatus(uploadId, { signal: options.signal })
+            chunkSize = Number(statusRes.data.chunkSize || chunkSize)
             totalChunks = statusRes.data.totalChunks || totalChunks
             uploadedSet = new Set(statusRes.data.uploadedChunkIndexes || options.uploadedChunks || [])
-            options.onSession?.({ uploadId, totalChunks, chunkSize: CHUNK_SIZE })
+            options.onSession?.({ uploadId, totalChunks, chunkSize })
         }
         const mode = 'chunk'
 
@@ -119,7 +138,7 @@ export const fileApi = {
             if (uploadedSet.has(index)) {
                 options.onProgress?.({
                     file: rawFile,
-                    percent: Math.round(((index + 1) / totalChunks) * 100),
+                    percent: Math.min(99, Math.round((uploadedSet.size / totalChunks) * 100)),
                     uploadedChunks: uploadedSet.size,
                     totalChunks,
                     mode
@@ -127,8 +146,8 @@ export const fileApi = {
                 continue
             }
 
-            const start = index * CHUNK_SIZE
-            const end = Math.min(rawFile.size, start + CHUNK_SIZE)
+            const start = index * chunkSize
+            const end = Math.min(rawFile.size, start + chunkSize)
             const formData = new FormData()
             formData.append('uploadId', uploadId)
             formData.append('chunkIndex', String(index))
@@ -150,6 +169,13 @@ export const fileApi = {
                 }
             })
             uploadedSet.add(index)
+            options.onProgress?.({
+                file: rawFile,
+                percent: Math.min(99, Math.round((uploadedSet.size / totalChunks) * 100)),
+                uploadedChunks: uploadedSet.size,
+                totalChunks,
+                mode
+            })
         }
 
         options.onProgress?.({
@@ -234,6 +260,41 @@ export const fileApi = {
         })
     },
 
+    /**
+     * 打开文档编辑页，返回真实抽取内容或 PDF 预览地址。
+     * @param {String} fileId 文件ID
+     */
+    openEditor: (fileId) => {
+        return request.get(`/files/${fileId}/editor`)
+    },
+
+    /**
+     * 获取 OnlyOffice 原格式编辑器配置。
+     * @param {String} fileId 文件ID
+     * @param {Object} config axios 配置
+     */
+    getOnlyOfficeConfig: (fileId, config = {}) => {
+        return request.get(`/files/${fileId}/onlyoffice/config`, config)
+    },
+
+    /**
+     * 触发 OnlyOffice 手动强制保存，等待后端确认覆盖 MinIO 后返回。
+     * @param {String} fileId 文件ID
+     * @param {Object} data { currentVersion, documentKey }
+     */
+    forceSaveOnlyOffice: (fileId, data) => {
+        return request.post(`/files/${fileId}/onlyoffice/forcesave`, data, { timeout: 90000, silent: true })
+    },
+
+    /**
+     * 保存在线编辑内容，后端会生成新文件版本并触发重新解析。
+     * @param {String} fileId 文件ID
+     * @param {Object} data { currentVersion, contentHtml, contentHash }
+     */
+    saveEditorContent: (fileId, data) => {
+        return request.put(`/files/${fileId}/editor/content`, data)
+    },
+
 
     /**
      * 删除文件
@@ -256,7 +317,7 @@ export const fileApi = {
     },
 
     /**
-     * 重新触发资料解析、切片、向量化和质量评估。
+     * 用户手动触发资料解析或重新解析。
      * @param {String} fileId 文件ID
      */
     reindex: (fileId) => {

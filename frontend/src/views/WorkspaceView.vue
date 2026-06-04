@@ -75,8 +75,8 @@ const quickActions = [
 
 const reservedModules = [
   {
-    title: '文档库与知识图谱',
-    description: '后续接入上传、解析、分片处理和知识图谱构建流程。',
+    title: '文档库',
+    description: '集中管理上传文档、解析状态、在线查看和下载删除流程。',
     icon: FolderOpened,
   },
   {

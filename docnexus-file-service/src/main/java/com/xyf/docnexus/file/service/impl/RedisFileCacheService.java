@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xyf.docnexus.common.VO.PageResponse;
 import com.xyf.docnexus.file.config.FileServiceProperties;
 import com.xyf.docnexus.file.dto.FileViewResponse;
+import com.xyf.docnexus.file.entity.DocumentFile;
 import com.xyf.docnexus.file.service.FileCacheService;
 import com.xyf.docnexus.file.util.FileRedisKeys;
 import lombok.RequiredArgsConstructor;
@@ -37,6 +38,7 @@ public class RedisFileCacheService implements FileCacheService {
     @Override
     public long currentVersion(Long userId, String knowledgeBaseId) {
         String key = FileRedisKeys.libraryVersionKey(userId, knowledgeBaseId);
+        registerUserCacheKey(userId, key);
         String value = redisTemplate.opsForValue().get(key);
         if (value == null) {
             long initialVersion = nextVersion();
@@ -64,8 +66,10 @@ public class RedisFileCacheService implements FileCacheService {
      */
     @Override
     public void increaseVersion(Long userId, String knowledgeBaseId) {
+        String key = FileRedisKeys.libraryVersionKey(userId, knowledgeBaseId);
+        registerUserCacheKey(userId, key);
         redisTemplate.opsForValue().set(
-                FileRedisKeys.libraryVersionKey(userId, knowledgeBaseId),
+                key,
                 String.valueOf(nextVersion()),
                 versionTtl()
         );
@@ -94,19 +98,87 @@ public class RedisFileCacheService implements FileCacheService {
     @Override
     public void putPage(Long userId, String knowledgeBaseId, long version, int pageNum, int pageSize, PageResponse<FileViewResponse> page) {
         try {
+            String key = FileRedisKeys.libraryPageKey(userId, knowledgeBaseId, version, pageNum, pageSize);
             long base = isEmptyPage(page)
                     ? properties.getCache().getLibraryEmptyTtlSeconds()
                     : properties.getCache().getLibraryBaseTtlSeconds();
             long jitter = properties.getCache().getLibraryJitterSeconds();
             long extra = jitter <= 0 ? 0 : ThreadLocalRandom.current().nextLong(jitter + 1);
+            registerUserCacheKey(userId, key);
             redisTemplate.opsForValue().set(
-                    FileRedisKeys.libraryPageKey(userId, knowledgeBaseId, version, pageNum, pageSize),
+                    key,
                     objectMapper.writeValueAsString(page),
                     Duration.ofSeconds(base + extra)
             );
         } catch (Exception exception) {
             log.warn("写入文件列表缓存失败，userId={}", userId, exception);
         }
+    }
+
+    /**
+     * 读取单文件元数据缓存。
+     */
+    @Override
+    public DocumentFile getFileMeta(Long userId, String fileId) {
+        String key = FileRedisKeys.fileMetaKey(userId, fileId);
+        String value = redisTemplate.opsForValue().get(key);
+        if (value == null) {
+            return null;
+        }
+        try {
+            return objectMapper.readValue(value, DocumentFile.class);
+        } catch (Exception exception) {
+            log.warn("读取单文件元数据缓存失败，准备删除坏缓存，userId={}, fileId={}", userId, fileId, exception);
+            redisTemplate.delete(key);
+            return null;
+        }
+    }
+
+    /**
+     * 写入单文件元数据缓存。
+     */
+    @Override
+    public void putFileMeta(DocumentFile file) {
+        if (file == null || file.getUserId() == null || file.getFileId() == null) {
+            return;
+        }
+        String key = FileRedisKeys.fileMetaKey(file.getUserId(), file.getFileId());
+        try {
+            registerUserCacheKey(file.getUserId(), key);
+            redisTemplate.opsForValue().set(
+                    key,
+                    objectMapper.writeValueAsString(file),
+                    fileMetaTtl()
+            );
+        } catch (Exception exception) {
+            log.warn("写入单文件元数据缓存失败，userId={}, fileId={}", file.getUserId(), file.getFileId(), exception);
+        }
+    }
+
+    /**
+     * 原子清理当前用户的文件服务缓存。
+     */
+    @Override
+    public long clearUserCaches(Long userId) {
+        if (userId == null) {
+            return 0L;
+        }
+        String lua = """
+                local members = redis.call('smembers', KEYS[1])
+                local deleted = 0
+                if #members > 0 then
+                    for i = 1, #members do
+                        deleted = deleted + redis.call('del', members[i])
+                    end
+                end
+                redis.call('del', KEYS[1])
+                return deleted
+                """;
+        Long deleted = redisTemplate.execute(
+                new DefaultRedisScript<>(lua, Long.class),
+                List.of(FileRedisKeys.userCacheSetKey(userId))
+        );
+        return deleted == null ? 0L : deleted;
     }
 
     /**
@@ -181,9 +253,13 @@ public class RedisFileCacheService implements FileCacheService {
     @Override
     public void saveUploadItem(Long userId, FileViewResponse item) {
         try {
-            redisTemplate.opsForSet().add(FileRedisKeys.uploadUserSetKey(userId), item.getUploadId());
+            String uploadSetKey = FileRedisKeys.uploadUserSetKey(userId);
+            String uploadItemKey = FileRedisKeys.uploadItemKey(item.getUploadId());
+            registerUserCacheKey(userId, uploadSetKey);
+            registerUserCacheKey(userId, uploadItemKey);
+            redisTemplate.opsForSet().add(uploadSetKey, item.getUploadId());
             redisTemplate.opsForValue().set(
-                    FileRedisKeys.uploadItemKey(item.getUploadId()),
+                    uploadItemKey,
                     objectMapper.writeValueAsString(item),
                     Duration.ofHours(properties.getUpload().getSessionExpireHours())
             );
@@ -224,5 +300,39 @@ public class RedisFileCacheService implements FileCacheService {
             }
         });
         return items;
+    }
+
+    /**
+     * 登记用户级缓存 Key，便于用户全会话离线后一次性原子清理。
+     */
+    private void registerUserCacheKey(Long userId, String cacheKey) {
+        if (userId == null || cacheKey == null || cacheKey.isBlank()) {
+            return;
+        }
+        String setKey = FileRedisKeys.userCacheSetKey(userId);
+        redisTemplate.opsForSet().add(setKey, cacheKey);
+        redisTemplate.expire(setKey, userCacheSetTtl());
+    }
+
+    /**
+     * 构造单文件元数据缓存 TTL。
+     */
+    private Duration fileMetaTtl() {
+        long base = Math.max(60L, properties.getCache().getFileMetaTtlSeconds());
+        long jitter = Math.max(0L, properties.getCache().getLibraryJitterSeconds());
+        long extra = jitter <= 0 ? 0 : ThreadLocalRandom.current().nextLong(jitter + 1);
+        return Duration.ofSeconds(base + extra);
+    }
+
+    /**
+     * 构造用户缓存索引集合 TTL。
+     */
+    private Duration userCacheSetTtl() {
+        long configured = properties.getCache().getUserCacheSetTtlSeconds();
+        long minSeconds = Math.max(
+                properties.getCache().getLibraryVersionTtlSeconds(),
+                Duration.ofHours(properties.getUpload().getSessionExpireHours()).toSeconds()
+        );
+        return Duration.ofSeconds(Math.max(configured, minSeconds));
     }
 }

@@ -66,7 +66,7 @@ public class SessionEventPublisher {
 
         rocketMQTemplate.syncSend(destination, message);
 
-        log.info("用户会话离线事件发送成功，eventId={}, sessionId={}, lastActiveAtMillis={}",
-                event.getEventId(), event.getSessionId(), event.getLastActiveAtMillis());
+        log.info("用户会话离线事件发送成功，eventId={}, userId={}, sessionId={}, allSessionsOffline={}, lastActiveAtMillis={}",
+                event.getEventId(), event.getUserId(), event.getSessionId(), event.getAllSessionsOffline(), event.getLastActiveAtMillis());
     }
 }

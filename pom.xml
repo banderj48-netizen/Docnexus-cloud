@@ -41,6 +41,8 @@
     <minio.version>8.6.0</minio.version>
     <!-- OkHttp JVM 实现：MinIO 8.6.0 编译期需要明确的 JVM 包 -->
     <okhttp-jvm.version>5.1.0</okhttp-jvm.version>
+    <!-- Apache POI：文件服务用于 DOCX/PPTX 内容抽取和在线编辑保存 -->
+    <poi.version>5.4.1</poi.version>
     <!-- gRPC Netty：Spring Cloud Gateway gRPC 自动配置需要，版本由父工程统一管理 -->
     <grpc-netty.version>1.53.0</grpc-netty.version>
 
@@ -142,6 +144,18 @@
       </dependency>
 
       <dependency>
+        <groupId>org.apache.poi</groupId>
+        <artifactId>poi-ooxml</artifactId>
+        <version>${poi.version}</version>
+      </dependency>
+
+      <dependency>
+        <groupId>org.apache.poi</groupId>
+        <artifactId>poi-scratchpad</artifactId>
+        <version>${poi.version}</version>
+      </dependency>
+
+      <dependency>
         <groupId>io.grpc</groupId>
         <artifactId>grpc-netty</artifactId>
         <version>${grpc-netty.version}</version>
@@ -188,6 +202,8 @@
           <configuration>
             <release>${java.version}</release>
             <encoding>${project.build.sourceEncoding}</encoding>
+            <!-- 保留方法参数名，避免 Spring MVC 依赖反射解析参数名时出现运行期错误。 -->
+            <parameters>true</parameters>
           </configuration>
         </plugin>
 

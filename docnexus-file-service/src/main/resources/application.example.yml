@@ -63,10 +63,10 @@ docnexus:
       secret-key: ${MINIO_SECRET_KEY:change-me}
       original-bucket: ${MINIO_ORIGINAL_BUCKET:docnexus-original-files}
       temp-bucket: ${MINIO_TEMP_BUCKET:docnexus-upload-temp}
-    # 100MB 内走普通上传，100MB 到 200MB 走分片上传，默认每片 10MB。
+    # 小于 5MB 走普通上传，5MB 到 200MB 走分片上传，分片必须在 5MB 到 10MB 之间。
     upload:
       max-size-bytes: ${FILE_UPLOAD_MAX_SIZE_BYTES:209715200}
-      multipart-threshold-bytes: ${FILE_UPLOAD_MULTIPART_THRESHOLD_BYTES:104857600}
+      multipart-threshold-bytes: ${FILE_UPLOAD_MULTIPART_THRESHOLD_BYTES:5242880}
       chunk-size-bytes: ${FILE_UPLOAD_CHUNK_SIZE_BYTES:10485760}
       session-expire-hours: ${FILE_UPLOAD_SESSION_EXPIRE_HOURS:24}
     # 文档库列表 Redis 版本号缓存：空列表缓存防穿透，短锁防击穿，TTL 抖动防雪崩。
@@ -75,6 +75,32 @@ docnexus:
       library-empty-ttl-seconds: ${FILE_LIBRARY_CACHE_EMPTY_TTL_SECONDS:300}
       library-jitter-seconds: ${FILE_LIBRARY_CACHE_JITTER_SECONDS:900}
       library-version-ttl-seconds: ${FILE_LIBRARY_CACHE_VERSION_TTL_SECONDS:86400}
+      file-meta-ttl-seconds: ${FILE_META_CACHE_TTL_SECONDS:1800}
+      user-cache-set-ttl-seconds: ${FILE_USER_CACHE_SET_TTL_SECONDS:172800}
       lock-ttl-seconds: ${FILE_LIBRARY_CACHE_LOCK_TTL_SECONDS:5}
       lock-wait-millis: ${FILE_LIBRARY_CACHE_LOCK_WAIT_MILLIS:80}
       lock-wait-attempts: ${FILE_LIBRARY_CACHE_LOCK_WAIT_ATTEMPTS:8}
+    # OnlyOffice Docs / Document Server：用于 DOCX、PPTX、TXT 原格式在线编辑。
+    onlyoffice:
+      enabled: ${ONLYOFFICE_ENABLED:true}
+      public-url: ${ONLYOFFICE_PUBLIC_URL:http://127.0.0.1:8090}
+      internal-url: ${ONLYOFFICE_INTERNAL_URL:http://127.0.0.1:8090}
+      callback-base-url: ${ONLYOFFICE_CALLBACK_BASE_URL:http://127.0.0.1:8088}
+      jwt-secret: ${ONLYOFFICE_JWT_SECRET:change-me}
+      source-token-ttl-seconds: ${ONLYOFFICE_SOURCE_TOKEN_TTL_SECONDS:3600}
+      callback-token-ttl-seconds: ${ONLYOFFICE_CALLBACK_TOKEN_TTL_SECONDS:604800}
+      config-token-ttl-seconds: ${ONLYOFFICE_CONFIG_TOKEN_TTL_SECONDS:3600}
+      callback-download-timeout-seconds: ${ONLYOFFICE_CALLBACK_DOWNLOAD_TIMEOUT_SECONDS:60}
+      force-save-wait-seconds: ${ONLYOFFICE_FORCE_SAVE_WAIT_SECONDS:45}
+    # 内部服务回调 token：后续 AI 服务解析完成后回调 FileService 时必须携带 X-Internal-Token。
+    internal:
+      callback-token: ${FILE_INTERNAL_CALLBACK_TOKEN:change-me}
+    # AI 服务地址：后续文档解析 MQ Consumer 通过 OpenFeign 调用。
+    ai-service:
+      base-url: ${AI_SERVICE_BASE_URL:http://127.0.0.1:8200}
+    # 默认关闭真实解析消费，AI 文档解析接口实现后再打开。
+    parse-consumer:
+      enabled: ${FILE_PARSE_CONSUMER_ENABLED:false}
+      group: ${FILE_PARSE_CONSUMER_GROUP:docnexus-file-parse-consumer-group}
+      dead-letter-topic: ${FILE_PARSE_DLQ_TOPIC:%DLQ%docnexus-file-parse-consumer-group}
+      dead-letter-group: ${FILE_PARSE_DLQ_CONSUMER_GROUP:docnexus-file-parse-dlq-consumer-group}

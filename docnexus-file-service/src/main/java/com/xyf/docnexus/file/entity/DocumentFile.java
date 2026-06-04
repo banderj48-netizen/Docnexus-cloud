@@ -31,6 +31,11 @@ public class DocumentFile {
     private String summary;
     private String keywordsJson;
     private String errorMessage;
+    private Integer parseRetryCount;
+    private Integer currentVersion;
+    private Integer editable;
+    private String contentHash;
+    private LocalDateTime lastSavedAt;
     private Integer deleted;
     private LocalDateTime createdAt;
     private LocalDateTime updatedAt;

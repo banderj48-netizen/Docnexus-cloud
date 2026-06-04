@@ -1,6 +1,7 @@
 package com.xyf.docnexus.file.service.impl;
 
 import com.xyf.docnexus.common.VO.PageResponse;
+import com.xyf.docnexus.common.constant.MqTopicConstants;
 import com.xyf.docnexus.file.config.FileServiceProperties;
 import com.xyf.docnexus.file.dto.*;
 import com.xyf.docnexus.file.entity.DocumentFile;
@@ -12,12 +13,15 @@ import com.xyf.docnexus.file.mapper.DocumentProcessTaskMapper;
 import com.xyf.docnexus.file.mapper.FileUploadChunkMapper;
 import com.xyf.docnexus.file.mapper.FileUploadSessionMapper;
 import com.xyf.docnexus.file.service.FileCacheService;
+import com.xyf.docnexus.file.service.DocumentFileLookupService;
 import com.xyf.docnexus.file.service.FileService;
 import com.xyf.docnexus.file.service.FileUploadFailureService;
 import com.xyf.docnexus.file.service.ObjectStorageService;
 import com.xyf.docnexus.file.util.*;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.apache.rocketmq.spring.core.RocketMQTemplate;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.core.io.InputStreamResource;
 import org.springframework.http.ContentDisposition;
 import org.springframework.http.HttpHeaders;
@@ -47,9 +51,12 @@ import java.util.Set;
 public class FileServiceImpl implements FileService {
 
     private static final Set<String> SUPPORTED_EXTENSIONS = Set.of(
-            "pdf", "doc", "docx", "ppt", "pptx", "xls", "xlsx", "txt",
-            "jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "gif"
+            "pdf", "doc", "docx", "ppt", "pptx", "txt", "wps", "wpt", "dps", "dpt", "wpd"
     );
+    private static final long MIN_MULTIPART_SIZE_BYTES = 5L * 1024 * 1024;
+    private static final long MIN_CHUNK_SIZE_BYTES = 5L * 1024 * 1024;
+    private static final long MAX_CHUNK_SIZE_BYTES = 10L * 1024 * 1024;
+    private static final int MAX_MANUAL_REPARSE_COUNT = 1;
 
     private final DocumentFileMapper documentFileMapper;
     private final FileUploadSessionMapper uploadSessionMapper;
@@ -57,8 +64,10 @@ public class FileServiceImpl implements FileService {
     private final DocumentProcessTaskMapper processTaskMapper;
     private final ObjectStorageService objectStorageService;
     private final FileCacheService fileCacheService;
+    private final DocumentFileLookupService documentFileLookupService;
     private final FileUploadFailureService uploadFailureService;
     private final FileServiceProperties properties;
+    private final ObjectProvider<RocketMQTemplate> rocketMQTemplateProvider;
 
     /**
      * 查询已上传文档列表。
@@ -121,7 +130,7 @@ public class FileServiceImpl implements FileService {
             StoredObject storedObject = objectStorageService.uploadOriginal(userId, fileId, fileExt, file);
             DocumentFile documentFile = createDocumentFile(session, storedObject, sha256);
             documentFileMapper.insert(documentFile);
-            createParseTask(userId, fileId);
+            documentFileLookupService.cacheFile(documentFile);
             session.setFileSha256(sha256);
             session.setBucketName(storedObject.getBucketName());
             session.setObjectKey(storedObject.getObjectKey());
@@ -145,12 +154,8 @@ public class FileServiceImpl implements FileService {
         String uploadId = FileIdGenerator.uploadId();
         String fileId = FileIdGenerator.fileId();
         String fileExt = FileTypeResolver.extension(request.getFileName());
-        long chunkSize = request.getChunkSize() == null || request.getChunkSize() <= 0
-                ? properties.getUpload().getChunkSizeBytes()
-                : request.getChunkSize();
-        int totalChunks = request.getTotalChunks() == null || request.getTotalChunks() <= 0
-                ? (int) Math.ceil(request.getFileSize() * 1.0 / chunkSize)
-                : request.getTotalChunks();
+        long chunkSize = resolveMultipartChunkSize(request);
+        int totalChunks = (int) Math.ceil(request.getFileSize() * 1.0 / chunkSize);
 
         FileUploadSession session = new FileUploadSession();
         session.setUploadId(uploadId);
@@ -187,6 +192,7 @@ public class FileServiceImpl implements FileService {
         if (chunk == null || chunk.isEmpty()) {
             throw new IllegalArgumentException("分片不能为空");
         }
+        validateChunkPayload(session, chunkIndex, chunk.getSize());
         try {
             StoredObject storedObject = objectStorageService.uploadTempChunk(userId, uploadId, chunkIndex, chunk);
             FileUploadChunk uploadChunk = new FileUploadChunk();
@@ -224,7 +230,7 @@ public class FileServiceImpl implements FileService {
         }
         try {
             if ("UPLOADED".equals(session.getStatus()) && StringUtils.hasText(session.getFileId())) {
-                DocumentFile existed = documentFileMapper.selectByUserAndFileId(userId, session.getFileId());
+                DocumentFile existed = documentFileLookupService.requireFile(userId, session.getFileId());
                 return new FileUploadResponse(session.getUploadId(), FileViewMapper.fromDocumentFile(existed));
             }
             List<FileUploadChunk> chunks = uploadChunkMapper.findUploadedChunks(session.getUploadId());
@@ -240,7 +246,7 @@ public class FileServiceImpl implements FileService {
             String sha256 = StringUtils.hasText(request.getFileSha256()) ? request.getFileSha256() : session.getFileSha256();
             DocumentFile documentFile = createDocumentFile(session, storedObject, sha256);
             documentFileMapper.insert(documentFile);
-            createParseTask(userId, session.getFileId());
+            documentFileLookupService.cacheFile(documentFile);
             session.setBucketName(storedObject.getBucketName());
             session.setObjectKey(storedObject.getObjectKey());
             session.setUploadedChunks(chunks.size());
@@ -268,6 +274,7 @@ public class FileServiceImpl implements FileService {
         return new UploadStatusResponse(
                 uploadId,
                 session.getStatus(),
+                session.getChunkSize(),
                 session.getUploadedChunks(),
                 session.getTotalChunks(),
                 indexes,
@@ -367,10 +374,7 @@ public class FileServiceImpl implements FileService {
      */
     @Override
     public ResponseEntity<InputStreamResource> download(Long userId, String fileId, boolean inline) {
-        DocumentFile file = documentFileMapper.selectByUserAndFileId(userId, fileId);
-        if (file == null) {
-            throw new IllegalArgumentException("文件不存在或无权访问");
-        }
+        DocumentFile file = documentFileLookupService.requireFile(userId, fileId);
         InputStreamResource resource = new InputStreamResource(objectStorageService.getObject(file.getBucketName(), file.getObjectKey()));
         ContentDisposition disposition = (inline ? ContentDisposition.inline() : ContentDisposition.attachment())
                 .filename(file.getOriginalName(), StandardCharsets.UTF_8)
@@ -387,13 +391,111 @@ public class FileServiceImpl implements FileService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public void delete(Long userId, String fileId) {
-        DocumentFile file = documentFileMapper.selectByUserAndFileId(userId, fileId);
-        if (file == null) {
-            throw new IllegalArgumentException("文件不存在或无权删除");
-        }
+        DocumentFile file = documentFileLookupService.requireFile(userId, fileId);
         documentFileMapper.softDelete(userId, fileId);
         objectStorageService.removeObject(file.getBucketName(), file.getObjectKey());
         fileCacheService.increaseVersion(userId, file.getKnowledgeBaseId());
+        file.setDeleted(1);
+        file.setUploadStatus("DELETED");
+        documentFileLookupService.cacheFileAfterCommit(file);
+    }
+
+    /**
+     * 用户手动提交解析请求。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void reindex(Long userId, String fileId) {
+        String lockKey = FileRedisKeys.manualParseLockKey(userId, fileId);
+        String lockToken = fileCacheService.tryLock(lockKey, Duration.ofSeconds(30));
+        if (lockToken == null) {
+            throw new IllegalArgumentException("该文档解析请求正在提交，请稍后再试");
+        }
+        try {
+            DocumentFile file = documentFileLookupService.requireFile(userId, fileId);
+
+            String parseStatus = normalizedParseStatus(file.getParseStatus());
+            if ("PENDING".equals(parseStatus) || "PROCESSING".equals(parseStatus)) {
+                throw new IllegalArgumentException("文档正在解析中，请勿重复提交");
+            }
+            if ("SUCCESS".equals(parseStatus)) {
+                throw new IllegalArgumentException("文档已解析完成，无需重复解析");
+            }
+
+            boolean reparse = "FAILED".equals(parseStatus);
+            int currentRetryCount = normalizedRetryCount(file.getParseRetryCount());
+            if (reparse && currentRetryCount >= MAX_MANUAL_REPARSE_COUNT) {
+                throw new IllegalArgumentException("请稍后再试");
+            }
+
+            int nextRetryCount = reparse ? currentRetryCount + 1 : 0;
+            int updatedRows = documentFileMapper.markParseRequested(userId, fileId, parseStatus, nextRetryCount);
+            if (updatedRows == 0) {
+                throw new IllegalArgumentException("解析状态已变化，请刷新后再试");
+            }
+
+            createParseTask(userId, fileId, reparse);
+            String eventId = FileIdGenerator.compactUuid();
+            sendParseEvent(file, reparse ? "MANUAL_REPARSE" : "MANUAL_PARSE", eventId);
+            fileCacheService.increaseVersion(userId, file.getKnowledgeBaseId());
+            file.setParseStatus("PENDING");
+            file.setIndexStatus("NONE");
+            file.setGraphStatus("NONE");
+            file.setSummary(null);
+            file.setKeywordsJson(null);
+            file.setErrorMessage(null);
+            file.setParseRetryCount(nextRetryCount);
+            documentFileLookupService.cacheFileAfterCommit(file);
+        } finally {
+            fileCacheService.unlock(lockKey, lockToken);
+        }
+    }
+
+    /**
+     * 内部解析服务回写解析结果。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public void updateParseResult(DocumentParseCallbackRequest request) {
+        String parseStatus = normalizedCallbackParseStatus(request.getParseStatus());
+        DocumentFile file = documentFileLookupService.requireFile(request.getUserId(), request.getFileId());
+
+        String summary = "SUCCESS".equals(parseStatus) ? request.getSummary() : null;
+        String keywordsJson = "SUCCESS".equals(parseStatus) ? request.getKeywordsJson() : null;
+        String errorMessage = "FAILED".equals(parseStatus)
+                ? defaultIfBlank(request.getErrorMessage(), "解析失败，请稍后重试")
+                : null;
+        int updatedRows = documentFileMapper.updateParseResult(
+                request.getUserId(),
+                request.getFileId(),
+                parseStatus,
+                "NONE",
+                "NONE",
+                summary,
+                keywordsJson,
+                errorMessage
+        );
+        if (updatedRows == 0) {
+            throw new IllegalArgumentException("解析结果回写失败，请检查文件状态");
+        }
+        if (StringUtils.hasText(request.getTaskId())) {
+            processTaskMapper.updateTaskStatus(
+                    request.getTaskId(),
+                    request.getUserId(),
+                    request.getFileId(),
+                    "SUCCESS".equals(parseStatus) ? "SUCCESS" : "FAILED",
+                    "SUCCESS".equals(parseStatus) ? "解析完成" : "解析失败",
+                    "SUCCESS".equals(parseStatus) ? 100 : 0
+            );
+        }
+        fileCacheService.increaseVersion(request.getUserId(), file.getKnowledgeBaseId());
+        file.setParseStatus(parseStatus);
+        file.setIndexStatus("NONE");
+        file.setGraphStatus("NONE");
+        file.setSummary(summary);
+        file.setKeywordsJson(keywordsJson);
+        file.setErrorMessage(errorMessage);
+        documentFileLookupService.cacheFileAfterCommit(file);
     }
 
     /**
@@ -442,27 +544,58 @@ public class FileServiceImpl implements FileService {
         documentFile.setBucketName(storedObject.getBucketName());
         documentFile.setObjectKey(storedObject.getObjectKey());
         documentFile.setUploadStatus("UPLOADED");
-        documentFile.setParseStatus("PENDING");
+        documentFile.setParseStatus("NOT_REQUESTED");
         documentFile.setIndexStatus("NONE");
         documentFile.setGraphStatus("NONE");
+        documentFile.setParseRetryCount(0);
+        documentFile.setCurrentVersion(1);
+        documentFile.setEditable(Set.of("txt", "docx", "pptx").contains(session.getFileExt()) ? 1 : 0);
+        documentFile.setContentHash(null);
         documentFile.setDeleted(0);
         documentFile.setCreatedAt(LocalDateTime.now());
         return documentFile;
     }
 
     /**
-     * 创建等待解析任务。
+     * 创建等待解析任务，任务进入 WAITING 后由 MQ 消费者排队处理。
      */
-    private void createParseTask(Long userId, String fileId) {
+    private void createParseTask(Long userId, String fileId, boolean reparse) {
         DocumentProcessTask task = new DocumentProcessTask();
         task.setTaskId(FileIdGenerator.taskId());
         task.setFileId(fileId);
         task.setUserId(userId);
         task.setTaskType("PARSE_DOCUMENT");
         task.setTaskStatus("WAITING");
-        task.setStage("等待解析");
+        task.setStage(reparse ? "等待重新解析" : "等待解析");
         task.setProgress(0);
         processTaskMapper.insert(task);
+    }
+
+    /**
+     * 投递用户手动解析 MQ 事件，多个不同文档的解析请求由 RocketMQ 队列自然排队。
+     */
+    private void sendParseEvent(DocumentFile file, String reason, String eventId) {
+        RocketMQTemplate rocketMQTemplate = rocketMQTemplateProvider.getIfAvailable();
+        if (rocketMQTemplate == null) {
+            log.warn("RocketMQTemplate 不可用，解析任务已保留 WAITING，fileId={}, eventId={}", file.getFileId(), eventId);
+            return;
+        }
+        DocumentReparseEvent event = new DocumentReparseEvent(
+                eventId,
+                file.getFileId(),
+                file.getUserId(),
+                normalizedVersion(file),
+                file.getBucketName(),
+                file.getObjectKey(),
+                reason,
+                LocalDateTime.now()
+        );
+        String destination = MqTopicConstants.FILE_EVENT_TOPIC + ":" + MqTopicConstants.TAG_DOCUMENT_REPARSE_REQUESTED;
+        try {
+            rocketMQTemplate.syncSendOrderly(destination, event, String.valueOf(file.getUserId()));
+        } catch (Exception exception) {
+            log.warn("发送用户手动解析事件失败，fileId={}, eventId={}", file.getFileId(), eventId, exception);
+        }
     }
 
     /**
@@ -523,7 +656,7 @@ public class FileServiceImpl implements FileService {
         item.setSizeText(FileViewMapper.formatSize(session.getFileSize()));
         item.setTimeText("刚刚");
         item.setUploadStatus(status);
-        item.setParseStatus("PENDING");
+        item.setParseStatus("NOT_REQUESTED");
         item.setStatusText(switch (status) {
             case "PENDING_UPLOAD" -> "待上传";
             case "UPLOADING" -> "上传中";
@@ -537,10 +670,10 @@ public class FileServiceImpl implements FileService {
             case "INTERRUPTED" -> "amber";
             default -> "blue";
         });
-        item.setKnowledgeText("待解析");
-        item.setKnowledgeTone("waiting");
-        item.setGraphText("待解析");
-        item.setGraphTone("waiting");
+        item.setKnowledgeText("未发起解析");
+        item.setKnowledgeTone("idle");
+        item.setGraphText("未发起解析");
+        item.setGraphTone("idle");
         item.setProgress(progress);
         item.setErrorMessage(session.getErrorMessage());
         return item;
@@ -577,12 +710,15 @@ public class FileServiceImpl implements FileService {
         if (file.getSize() > properties.getUpload().getMaxSizeBytes()) {
             throw new IllegalArgumentException("单个文件不能超过 200MB");
         }
-        if (multipartOnly && file.getSize() <= properties.getUpload().getMultipartThresholdBytes()) {
+        if (!multipartOnly && file.getSize() >= MIN_MULTIPART_SIZE_BYTES) {
+            throw new IllegalArgumentException("5MB 及以上文件请使用分片上传");
+        }
+        if (multipartOnly && file.getSize() < MIN_MULTIPART_SIZE_BYTES) {
             throw new IllegalArgumentException("该文件不需要分片上传");
         }
         String extension = FileTypeResolver.extension(file.getOriginalFilename());
         if (!SUPPORTED_EXTENSIONS.contains(extension)) {
-            throw new IllegalArgumentException("仅支持 PDF、Word、PPT、Excel、TXT 和常见图片格式");
+            throw new IllegalArgumentException("仅支持 PDF、Word、PPT、WPS/WPD 和 TXT 文件，不支持图片、视频或表格文件");
         }
     }
 
@@ -593,13 +729,85 @@ public class FileServiceImpl implements FileService {
         if (request.getFileSize() > properties.getUpload().getMaxSizeBytes()) {
             throw new IllegalArgumentException("单个文件不能超过 200MB");
         }
-        if (request.getFileSize() <= properties.getUpload().getMultipartThresholdBytes()) {
-            throw new IllegalArgumentException("小于等于 100MB 的文件请使用普通上传");
+        if (request.getFileSize() < MIN_MULTIPART_SIZE_BYTES) {
+            throw new IllegalArgumentException("小于 5MB 的文件请使用普通上传");
         }
         String extension = FileTypeResolver.extension(request.getFileName());
         if (!SUPPORTED_EXTENSIONS.contains(extension)) {
-            throw new IllegalArgumentException("仅支持 PDF、Word、PPT、Excel、TXT 和常见图片格式");
+            throw new IllegalArgumentException("仅支持 PDF、Word、PPT、WPS/WPD 和 TXT 文件，不支持图片、视频或表格文件");
         }
+    }
+
+    /**
+     * 解析并校验分片大小，确保新上传不会再生成小于 MinIO compose 限制的非末尾分片。
+     */
+    private long resolveMultipartChunkSize(MultipartInitRequest request) {
+        long defaultChunkSize = Math.max(properties.getUpload().getChunkSizeBytes(), MIN_CHUNK_SIZE_BYTES);
+        long chunkSize = request.getChunkSize() == null || request.getChunkSize() <= 0
+                ? defaultChunkSize
+                : request.getChunkSize();
+        if (chunkSize < MIN_CHUNK_SIZE_BYTES || chunkSize > MAX_CHUNK_SIZE_BYTES) {
+            throw new IllegalArgumentException("分片大小不合法，单片必须在 5MB 到 10MB 之间");
+        }
+        return chunkSize;
+    }
+
+    /**
+     * 校验实际上传的分片大小，避免客户端传入小分片导致 MinIO 合并失败或最终文件错位。
+     */
+    private void validateChunkPayload(FileUploadSession session, Integer chunkIndex, long actualSize) {
+        long chunkSize = session.getChunkSize() == null || session.getChunkSize() <= 0
+                ? Math.max(properties.getUpload().getChunkSizeBytes(), MIN_CHUNK_SIZE_BYTES)
+                : session.getChunkSize();
+        boolean lastChunk = chunkIndex == session.getTotalChunks() - 1;
+        long expectedSize = lastChunk
+                ? session.getFileSize() - (long) chunkIndex * chunkSize
+                : chunkSize;
+        if (actualSize != expectedSize) {
+            throw new IllegalArgumentException("分片大小与上传会话不一致，请重新上传该文件");
+        }
+        if (!lastChunk && actualSize < MIN_CHUNK_SIZE_BYTES) {
+            throw new IllegalArgumentException("非末尾分片不能小于 5MB");
+        }
+    }
+
+    /**
+     * 规范化解析状态，空值按未发起解析处理。
+     */
+    private String normalizedParseStatus(String parseStatus) {
+        return StringUtils.hasText(parseStatus) ? parseStatus.trim().toUpperCase() : "NOT_REQUESTED";
+    }
+
+    /**
+     * 校验解析回调状态，只允许成功或失败回调改最终态。
+     */
+    private String normalizedCallbackParseStatus(String parseStatus) {
+        String normalized = normalizedParseStatus(parseStatus);
+        if (!"SUCCESS".equals(normalized) && !"FAILED".equals(normalized)) {
+            throw new IllegalArgumentException("解析回调状态只允许 SUCCESS 或 FAILED");
+        }
+        return normalized;
+    }
+
+    /**
+     * 为空时返回默认文案。
+     */
+    private String defaultIfBlank(String value, String fallback) {
+        return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    /**
+     * 规范化用户手动重新解析次数。
+     */
+    private int normalizedRetryCount(Integer retryCount) {
+        return retryCount == null || retryCount < 0 ? 0 : retryCount;
+    }
+
+    /**
+     * 获取当前文件版本号，缺失时按第一版处理。
+     */
+    private int normalizedVersion(DocumentFile file) {
+        return file.getCurrentVersion() == null || file.getCurrentVersion() < 1 ? 1 : file.getCurrentVersion();
     }
 
     /**

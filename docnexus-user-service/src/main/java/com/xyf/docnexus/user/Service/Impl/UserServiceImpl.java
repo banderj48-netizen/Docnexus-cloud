@@ -920,17 +920,57 @@ public class UserServiceImpl implements UserService {
         LocalDateTime offlineAt = LocalDateTime.now();
         for (UserSessionOnlineStore.OfflineCandidate candidate : expiredSessions) {
             try {
+                Long offlineUserId = resolveOfflineUserId(candidate.getSessionId());
+                Boolean allSessionsOffline = offlineUserId == null ? Boolean.FALSE : isAllSessionsOffline(offlineUserId);
                 sessionEventPublisher.publishSessionOffline(new SessionOfflineEvent(
                         UUID.randomUUID().toString(),
+                        offlineUserId,
                         candidate.getSessionId(),
                         candidate.getLastSeenMillis(),
-                        offlineAt
+                        offlineAt,
+                        allSessionsOffline
                 ));
             } catch (Exception exception) {
                 log.warn("发送会话离线事件失败，sessionId={}", candidate.getSessionId(), exception);
             }
         }
         log.info("清理 Redis 超时在线索引完成，count={}", expiredSessions.size());
+    }
+
+    /**
+     * 根据 sessionId 解析离线用户 ID。
+     *
+     * <p>优先读取 heartbeat 会话归属缓存，缓存缺失时再查询 ACTIVE 会话表。
+     * 这样大多数离线检测不会额外访问 MySQL。</p>
+     */
+    private Long resolveOfflineUserId(String sessionId) {
+        HeartbeatSessionCacheStore.HeartbeatSessionSnapshot cachedSession = heartbeatSessionCacheStore.get(sessionId);
+        if (cachedSession != null && cachedSession.getUserId() != null) {
+            return cachedSession.getUserId();
+        }
+        UserSessionQueryParam queryParam = new UserSessionQueryParam();
+        queryParam.setSessionId(sessionId);
+        UserSession session = sessionMapper.selectActiveBySessionId(queryParam);
+        return session == null ? null : session.getUserId();
+    }
+
+    /**
+     * 判断用户是否已经没有任何在线会话。
+     *
+     * <p>只要任意 ACTIVE 会话仍存在 Redis presence=ONLINE，就不能清理用户级缓存。</p>
+     */
+    private boolean isAllSessionsOffline(Long userId) {
+        if (userId == null) {
+            return false;
+        }
+        UserSessionQueryParam queryParam = new UserSessionQueryParam();
+        queryParam.setUserId(userId);
+        List<UserSession> activeSessions = sessionMapper.selectActiveByUserId(queryParam);
+        if (activeSessions == null || activeSessions.isEmpty()) {
+            return true;
+        }
+        return activeSessions.stream()
+                .noneMatch(session -> userSessionOnlineStore.isOnline(session.getSessionId()));
     }
 
     private IssuedSession createSessionAndAccessCache(UserDTO user,

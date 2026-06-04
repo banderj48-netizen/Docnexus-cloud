@@ -19,12 +19,17 @@ CREATE TABLE IF NOT EXISTS `document_file` (
   `bucket_name` VARCHAR(128) NOT NULL COMMENT 'MinIO bucket',
   `object_key` VARCHAR(512) NOT NULL COMMENT 'MinIO object key',
   `upload_status` VARCHAR(32) NOT NULL DEFAULT 'UPLOADED' COMMENT '上传状态：UPLOADED / DELETED',
-  `parse_status` VARCHAR(32) NOT NULL DEFAULT 'PENDING' COMMENT '解析状态：PENDING / PROCESSING / SUCCESS / FAILED',
+  `parse_status` VARCHAR(32) NOT NULL DEFAULT 'NOT_REQUESTED' COMMENT '解析状态：NOT_REQUESTED / PENDING / PROCESSING / SUCCESS / FAILED',
   `index_status` VARCHAR(32) NOT NULL DEFAULT 'NONE' COMMENT '索引状态：NONE / PENDING / PROCESSING / SUCCESS / FAILED',
   `graph_status` VARCHAR(32) NOT NULL DEFAULT 'NONE' COMMENT '图谱状态：NONE / PENDING / BUILDING / SUCCESS / FAILED',
   `summary` TEXT COMMENT 'AI 摘要',
   `keywords_json` TEXT COMMENT '关键词 JSON',
   `error_message` VARCHAR(1024) DEFAULT NULL COMMENT '失败原因',
+  `parse_retry_count` INT NOT NULL DEFAULT 0 COMMENT '用户手动重新解析次数',
+  `current_version` INT NOT NULL DEFAULT 1 COMMENT '当前文件版本号',
+  `editable` TINYINT NOT NULL DEFAULT 0 COMMENT '是否支持在线编辑',
+  `content_hash` VARCHAR(64) DEFAULT NULL COMMENT '当前编辑内容 SHA-256',
+  `last_saved_at` DATETIME DEFAULT NULL COMMENT '最近手动保存时间',
   `deleted` TINYINT NOT NULL DEFAULT 0 COMMENT '软删除标记',
   `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
   `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
@@ -99,6 +104,40 @@ CREATE TABLE IF NOT EXISTS `document_process_task` (
   KEY `idx_document_process_task_user_status` (`user_id`, `task_status`, `created_at` DESC)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档处理任务表';
 
+CREATE TABLE IF NOT EXISTS `document_file_content` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `file_id` VARCHAR(64) NOT NULL COMMENT '文件 ID',
+  `user_id` BIGINT NOT NULL COMMENT '用户 ID',
+  `version_number` INT NOT NULL COMMENT '对应 document_file.current_version',
+  `content_format` VARCHAR(32) NOT NULL COMMENT 'HTML / TEXT / PDF_PREVIEW',
+  `content_html` MEDIUMTEXT COMMENT '安全 HTML 内容',
+  `plain_text` MEDIUMTEXT COMMENT '纯文本内容',
+  `content_hash` VARCHAR(64) NOT NULL COMMENT '内容 SHA-256',
+  `source_bucket` VARCHAR(128) NOT NULL COMMENT '来源 MinIO bucket',
+  `source_object_key` VARCHAR(512) NOT NULL COMMENT '来源 MinIO object key',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  `updated_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_document_file_content_file_version` (`file_id`, `version_number`),
+  KEY `idx_document_file_content_user_file` (`user_id`, `file_id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档在线查看内容快照表';
+
+CREATE TABLE IF NOT EXISTS `document_content_revision_log` (
+  `id` BIGINT NOT NULL AUTO_INCREMENT COMMENT '主键',
+  `event_id` VARCHAR(64) NOT NULL COMMENT '保存事件 ID',
+  `file_id` VARCHAR(64) NOT NULL COMMENT '文件 ID',
+  `user_id` BIGINT NOT NULL COMMENT '用户 ID',
+  `old_version` INT NOT NULL COMMENT '旧版本号',
+  `new_version` INT NOT NULL COMMENT '新版本号',
+  `old_object_key` VARCHAR(512) NOT NULL COMMENT '旧 MinIO 对象',
+  `new_object_key` VARCHAR(512) NOT NULL COMMENT '新 MinIO 对象',
+  `content_hash` VARCHAR(64) NOT NULL COMMENT '新内容 SHA-256',
+  `created_at` DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_document_revision_event` (`event_id`),
+  KEY `idx_document_revision_file` (`file_id`, `created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci COMMENT='文档保存覆盖日志表';
+
 -- =========================================================
 -- 兼容已有旧表的增量迁移
 -- =========================================================
@@ -127,7 +166,7 @@ END//
 DELIMITER ;
 
 CALL add_file_column_if_missing('document_file', 'parse_status',
-  'ALTER TABLE document_file ADD COLUMN parse_status VARCHAR(32) NOT NULL DEFAULT ''PENDING'' COMMENT ''解析状态：PENDING / PROCESSING / SUCCESS / FAILED'' AFTER upload_status');
+  'ALTER TABLE document_file ADD COLUMN parse_status VARCHAR(32) NOT NULL DEFAULT ''NOT_REQUESTED'' COMMENT ''解析状态：NOT_REQUESTED / PENDING / PROCESSING / SUCCESS / FAILED'' AFTER upload_status');
 CALL add_file_column_if_missing('document_file', 'index_status',
   'ALTER TABLE document_file ADD COLUMN index_status VARCHAR(32) NOT NULL DEFAULT ''NONE'' COMMENT ''索引状态：NONE / PENDING / PROCESSING / SUCCESS / FAILED'' AFTER parse_status');
 CALL add_file_column_if_missing('document_file', 'graph_status',
@@ -136,6 +175,16 @@ CALL add_file_column_if_missing('document_file', 'mime_type',
   'ALTER TABLE document_file ADD COLUMN mime_type VARCHAR(128) DEFAULT NULL COMMENT ''MIME 类型'' AFTER file_ext');
 CALL add_file_column_if_missing('document_file', 'file_sha256',
   'ALTER TABLE document_file ADD COLUMN file_sha256 VARCHAR(64) DEFAULT NULL COMMENT ''文件 SHA-256'' AFTER file_size');
+CALL add_file_column_if_missing('document_file', 'parse_retry_count',
+  'ALTER TABLE document_file ADD COLUMN parse_retry_count INT NOT NULL DEFAULT 0 COMMENT ''用户手动重新解析次数'' AFTER error_message');
+CALL add_file_column_if_missing('document_file', 'current_version',
+  'ALTER TABLE document_file ADD COLUMN current_version INT NOT NULL DEFAULT 1 COMMENT ''当前文件版本号'' AFTER error_message');
+CALL add_file_column_if_missing('document_file', 'editable',
+  'ALTER TABLE document_file ADD COLUMN editable TINYINT NOT NULL DEFAULT 0 COMMENT ''是否支持在线编辑'' AFTER current_version');
+CALL add_file_column_if_missing('document_file', 'content_hash',
+  'ALTER TABLE document_file ADD COLUMN content_hash VARCHAR(64) DEFAULT NULL COMMENT ''当前编辑内容 SHA-256'' AFTER editable');
+CALL add_file_column_if_missing('document_file', 'last_saved_at',
+  'ALTER TABLE document_file ADD COLUMN last_saved_at DATETIME DEFAULT NULL COMMENT ''最近手动保存时间'' AFTER content_hash');
 CALL add_file_column_if_missing('file_upload_session', 'mime_type',
   'ALTER TABLE file_upload_session ADD COLUMN mime_type VARCHAR(128) DEFAULT NULL COMMENT ''MIME 类型'' AFTER file_ext');
 CALL add_file_column_if_missing('file_upload_session', 'file_sha256',
@@ -150,6 +199,10 @@ ALTER TABLE file_upload_session
   COMMENT 'PENDING_UPLOAD / UPLOADING / COMPLETING / INTERRUPTED / UPLOADED / UPLOAD_FAILED / CANCELED / EXPIRED';
 CALL add_file_column_if_missing('file_upload_chunk', 'chunk_sha256',
   'ALTER TABLE file_upload_chunk ADD COLUMN chunk_sha256 VARCHAR(64) DEFAULT NULL COMMENT ''分片 SHA-256'' AFTER chunk_size');
+
+ALTER TABLE document_file
+  MODIFY COLUMN parse_status VARCHAR(32) NOT NULL DEFAULT 'NOT_REQUESTED'
+  COMMENT '解析状态：NOT_REQUESTED / PENDING / PROCESSING / SUCCESS / FAILED';
 
 DROP PROCEDURE IF EXISTS add_file_index_if_missing;
 DELIMITER //

@@ -129,7 +129,7 @@ const toggleSidebar = () => {
 const navItems = computed(() => [
   { label: '首页', icon: House, path: '/workspace' },
   { label: '账户中心', icon: User, path: '/profile' },
-  { label: '文档库与知识图谱', icon: Files, path: '/knowledge' },
+  { label: '文档库', icon: Files, path: '/knowledge' },
   { label: 'AI 阅读室', icon: Reading, path: '/study' },
   { label: '用户日志', icon: DocumentChecked, path: '/ai-logs' },
 ])

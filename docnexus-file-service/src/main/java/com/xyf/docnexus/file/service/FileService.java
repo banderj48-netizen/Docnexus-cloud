@@ -80,4 +80,14 @@ public interface FileService {
      * 删除文件。
      */
     void delete(Long userId, String fileId);
+
+    /**
+     * 重新触发解析。
+     */
+    void reindex(Long userId, String fileId);
+
+    /**
+     * 内部服务回写文档解析结果。
+     */
+    void updateParseResult(DocumentParseCallbackRequest request);
 }

@@ -23,12 +23,12 @@ public interface DocumentFileMapper {
                 file_id, user_id, knowledge_base_id, original_name, file_category,
                 file_ext, mime_type, file_size, file_sha256, storage_type,
                 bucket_name, object_key, upload_status, parse_status, index_status,
-                graph_status, deleted, created_at, updated_at
+                graph_status, parse_retry_count, current_version, editable, content_hash, deleted, created_at, updated_at
             ) VALUES (
                 #{fileId}, #{userId}, #{knowledgeBaseId}, #{originalName}, #{fileCategory},
                 #{fileExt}, #{mimeType}, #{fileSize}, #{fileSha256}, #{storageType},
                 #{bucketName}, #{objectKey}, #{uploadStatus}, #{parseStatus}, #{indexStatus},
-                #{graphStatus}, #{deleted}, NOW(), NOW()
+                #{graphStatus}, #{parseRetryCount}, #{currentVersion}, #{editable}, #{contentHash}, #{deleted}, NOW(), NOW()
             )
             """)
     int insert(DocumentFile file);
@@ -88,4 +88,117 @@ public interface DocumentFileMapper {
               AND deleted = 0
             """)
     int softDelete(@Param("userId") Long userId, @Param("fileId") String fileId);
+
+    /**
+     * 乐观锁更新当前文件对象和解析状态。
+     */
+    @Update("""
+            UPDATE document_file
+            SET bucket_name = #{bucketName},
+                object_key = #{objectKey},
+                file_size = #{fileSize},
+                file_sha256 = #{fileSha256},
+                content_hash = #{contentHash},
+                current_version = current_version + 1,
+                parse_status = 'PENDING',
+                index_status = 'NONE',
+                graph_status = 'NONE',
+                summary = NULL,
+                keywords_json = NULL,
+                error_message = NULL,
+                parse_retry_count = 0,
+                last_saved_at = NOW(),
+                updated_at = NOW()
+            WHERE user_id = #{userId}
+              AND file_id = #{fileId}
+              AND current_version = #{currentVersion}
+              AND deleted = 0
+            """)
+    int updateEditorObjectByVersion(@Param("userId") Long userId,
+                                    @Param("fileId") String fileId,
+                                    @Param("currentVersion") Integer currentVersion,
+                                    @Param("bucketName") String bucketName,
+                                    @Param("objectKey") String objectKey,
+                                    @Param("fileSize") Long fileSize,
+                                    @Param("fileSha256") String fileSha256,
+                                    @Param("contentHash") String contentHash);
+
+    /**
+     * 更新文件编辑能力和内容 hash。
+     */
+    @Update("""
+            UPDATE document_file
+            SET editable = #{editable},
+                content_hash = #{contentHash},
+                updated_at = NOW()
+            WHERE user_id = #{userId}
+              AND file_id = #{fileId}
+              AND deleted = 0
+            """)
+    int updateEditorSnapshot(@Param("userId") Long userId,
+                             @Param("fileId") String fileId,
+                             @Param("editable") Integer editable,
+                             @Param("contentHash") String contentHash);
+
+    /**
+     * 用户手动提交解析请求，更新解析状态和重新解析次数。
+     */
+    @Update("""
+            UPDATE document_file
+            SET parse_status = 'PENDING',
+                index_status = 'NONE',
+                graph_status = 'NONE',
+                summary = NULL,
+                keywords_json = NULL,
+                error_message = NULL,
+                parse_retry_count = #{parseRetryCount},
+                updated_at = NOW()
+            WHERE user_id = #{userId}
+              AND file_id = #{fileId}
+              AND parse_status = #{expectedParseStatus}
+              AND deleted = 0
+            """)
+    int markParseRequested(@Param("userId") Long userId,
+                           @Param("fileId") String fileId,
+                           @Param("expectedParseStatus") String expectedParseStatus,
+                           @Param("parseRetryCount") Integer parseRetryCount);
+
+    /**
+     * MQ 消费者领取任务后标记文件正在解析。
+     */
+    @Update("""
+            UPDATE document_file
+            SET parse_status = 'PROCESSING',
+                updated_at = NOW()
+            WHERE user_id = #{userId}
+              AND file_id = #{fileId}
+              AND parse_status = 'PENDING'
+              AND deleted = 0
+            """)
+    int markParseProcessing(@Param("userId") Long userId, @Param("fileId") String fileId);
+
+    /**
+     * 解析服务回调解析结果。
+     */
+    @Update("""
+            UPDATE document_file
+            SET parse_status = #{parseStatus},
+                index_status = #{indexStatus},
+                graph_status = #{graphStatus},
+                summary = #{summary},
+                keywords_json = #{keywordsJson},
+                error_message = #{errorMessage},
+                updated_at = NOW()
+            WHERE user_id = #{userId}
+              AND file_id = #{fileId}
+              AND deleted = 0
+            """)
+    int updateParseResult(@Param("userId") Long userId,
+                          @Param("fileId") String fileId,
+                          @Param("parseStatus") String parseStatus,
+                          @Param("indexStatus") String indexStatus,
+                          @Param("graphStatus") String graphStatus,
+                          @Param("summary") String summary,
+                          @Param("keywordsJson") String keywordsJson,
+                          @Param("errorMessage") String errorMessage);
 }

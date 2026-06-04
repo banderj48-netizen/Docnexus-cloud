@@ -23,6 +23,11 @@ public class SessionOfflineEvent {
     private String eventId;
 
     /**
+     * 用户 ID。
+     */
+    private Long userId;
+
+    /**
      * 会话 ID。
      */
     private String sessionId;
@@ -36,4 +41,11 @@ public class SessionOfflineEvent {
      * 后端判定离线的时间。
      */
     private LocalDateTime offlineAt;
+
+    /**
+     * 是否该用户所有会话都已离线。
+     *
+     * <p>下游服务只在该字段为 true 时清理用户级缓存，避免单设备离线误伤其他在线设备。</p>
+     */
+    private Boolean allSessionsOffline;
 }

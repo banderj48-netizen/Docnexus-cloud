@@ -30,6 +30,7 @@ public final class MqTopicConstant {
     public static final String TAG_FILE_UPLOAD_FAILED = "FILE_UPLOAD_FAILED";
     public static final String TAG_FILE_DELETED = "FILE_DELETED";
     public static final String TAG_FILE_PARSE_TASK_CREATED = "FILE_PARSE_TASK_CREATED";
+    public static final String TAG_DOCUMENT_REPARSE_REQUESTED = "DOCUMENT_REPARSE_REQUESTED";
 
     public static final String TAG_BUSINESS_OPERATION_LOG = "BUSINESS_OPERATION_LOG";
 

@@ -28,11 +28,9 @@ public final class FileTypeResolver {
     public static String category(String fileName) {
         return switch (extension(fileName)) {
             case "pdf" -> "PDF";
-            case "doc", "docx" -> "WORD";
-            case "ppt", "pptx" -> "PPT";
-            case "xls", "xlsx" -> "EXCEL";
-            case "txt", "md" -> "TXT";
-            case "jpg", "jpeg", "png", "webp", "bmp", "tif", "tiff", "gif" -> "IMAGE";
+            case "doc", "docx", "wps", "wpt", "wpd" -> "WORD";
+            case "ppt", "pptx", "dps", "dpt" -> "PPT";
+            case "txt" -> "TXT";
             default -> "UNKNOWN";
         };
     }
@@ -44,8 +42,6 @@ public final class FileTypeResolver {
         return switch (category(fileName)) {
             case "WORD" -> "W";
             case "PPT" -> "P";
-            case "EXCEL" -> "XLS";
-            case "IMAGE" -> "IMG";
             case "TXT" -> "TXT";
             case "PDF" -> "PDF";
             default -> "FILE";

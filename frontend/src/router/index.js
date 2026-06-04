@@ -24,6 +24,7 @@ const routes = [
   { path: '/dashboard', component: () => import('../views/dashboard/IndexView.vue') },
   { path: '/aiops', component: () => import('../views/aiops/AIOpsView.vue') },
   { path: '/editor/:id', component: () => import('../views/EditorView.vue') },
+  { path: '/files/:id/editor', component: () => import('../views/EditorView.vue') },
 ]
 
 const router = createRouter({

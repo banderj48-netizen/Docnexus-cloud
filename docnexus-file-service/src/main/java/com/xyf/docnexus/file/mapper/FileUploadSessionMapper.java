@@ -121,7 +121,7 @@ public interface FileUploadSessionMapper {
             SELECT *
             FROM file_upload_session
             WHERE user_id = #{userId}
-              AND status IN ('PENDING_UPLOAD', 'UPLOADING', 'COMPLETING', 'INTERRUPTED')
+              AND status IN ('PENDING_UPLOAD', 'UPLOADING', 'COMPLETING', 'INTERRUPTED', 'UPLOAD_FAILED')
             ORDER BY updated_at DESC
             """)
     List<FileUploadSession> selectRecoverableByUser(Long userId);

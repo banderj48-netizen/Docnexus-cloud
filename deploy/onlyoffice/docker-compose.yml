@@ -1,0 +1,25 @@
+services:
+  onlyoffice-documentserver:
+    image: onlyoffice/documentserver:latest
+    container_name: docnexus-onlyoffice-documentserver
+    restart: unless-stopped
+    ports:
+      - "${ONLYOFFICE_HTTP_PORT:-8090}:80"
+    environment:
+      JWT_ENABLED: "true"
+      JWT_SECRET: "${ONLYOFFICE_JWT_SECRET:-docnexus-onlyoffice-dev-secret}"
+      JWT_HEADER: "Authorization"
+      JWT_IN_BODY: "true"
+    volumes:
+      - onlyoffice_data:/var/www/onlyoffice/Data
+      - onlyoffice_logs:/var/log/onlyoffice
+      - onlyoffice_lib:/var/lib/onlyoffice
+      - onlyoffice_db:/var/lib/postgresql
+      - onlyoffice_fonts:/usr/share/fonts/truetype/custom
+
+volumes:
+  onlyoffice_data:
+  onlyoffice_logs:
+  onlyoffice_lib:
+  onlyoffice_db:
+  onlyoffice_fonts:

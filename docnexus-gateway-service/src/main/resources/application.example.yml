@@ -98,6 +98,8 @@ docnexus:
       - /api/auth/register
       - /api/auth/refresh
       - /api/auth/password/recovery/**
+      - /api/files/*/onlyoffice/source
+      - /api/files/*/onlyoffice/callback
       - /actuator/**
 
   gateway:
