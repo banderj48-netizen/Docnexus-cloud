@@ -19,7 +19,7 @@ public interface FileService {
     /**
      * 普通上传文件。
      */
-    FileUploadResponse upload(Long userId, String knowledgeBaseId, MultipartFile file);
+    FileUploadResponse upload(Long userId, String knowledgeBaseId, MultipartFile file, String metadataJson);
 
     /**
      * 初始化分片上传。
@@ -70,6 +70,26 @@ public interface FileService {
      * 查询当前用户可恢复上传会话。
      */
     java.util.List<RecoverableUploadResponse> recoverableUploads(Long userId);
+
+    /**
+     * 查询上传元信息表单选项。
+     */
+    UploadMetadataOptionsResponse uploadMetadataOptions();
+
+    /**
+     * 查询单个文档元信息。
+     */
+    DocumentMetadataResponse getMetadata(Long userId, String fileId);
+
+    /**
+     * 保存单个文档元信息。
+     */
+    DocumentMetadataResponse saveMetadata(Long userId, String fileId, DocumentMetadataRequest request);
+
+    /**
+     * 基于文件名和已知字段生成 AI 元信息建议。
+     */
+    AiMetadataSuggestResponse suggestMetadata(Long userId, String fileId);
 
     /**
      * 下载或预览文件。

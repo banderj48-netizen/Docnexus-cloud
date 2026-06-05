@@ -25,5 +25,11 @@ public class DocumentParseCallbackRequest {
 
     private String summary;
     private String keywordsJson;
+    private String metadataJson;
+    private String qualityJson;
+    private Integer parseQualityScore;
+    private Integer parentChunkCount;
+    private Integer childChunkCount;
+    private Integer assetCount;
     private String errorMessage;
 }

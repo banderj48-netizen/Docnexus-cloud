@@ -45,8 +45,9 @@ public class FileController {
     @PostMapping("/upload")
     public ApiResponse<FileUploadResponse> upload(@RequestHeader("X-User-Id") Long userId,
                                                   @RequestParam(value = "knowledgeBaseId", defaultValue = "default") String knowledgeBaseId,
+                                                  @RequestParam(value = "metadataJson", required = false) String metadataJson,
                                                   @RequestParam("file") MultipartFile file) {
-        return ApiResponse.success("上传成功", fileService.upload(userId, knowledgeBaseId, file));
+        return ApiResponse.success("上传成功", fileService.upload(userId, knowledgeBaseId, file, metadataJson));
     }
 
     /**
@@ -150,6 +151,42 @@ public class FileController {
     @GetMapping("/uploads/recoverable")
     public ApiResponse<List<RecoverableUploadResponse>> recoverableUploads(@RequestHeader("X-User-Id") Long userId) {
         return ApiResponse.success(fileService.recoverableUploads(userId));
+    }
+
+    /**
+     * 查询上传元信息表单选项。
+     */
+    @GetMapping("/upload-metadata/options")
+    public ApiResponse<UploadMetadataOptionsResponse> uploadMetadataOptions() {
+        return ApiResponse.success(fileService.uploadMetadataOptions());
+    }
+
+    /**
+     * 查询单个文档元信息。
+     */
+    @GetMapping("/{fileId}/metadata")
+    public ApiResponse<DocumentMetadataResponse> getMetadata(@RequestHeader("X-User-Id") Long userId,
+                                                             @PathVariable("fileId") String fileId) {
+        return ApiResponse.success(fileService.getMetadata(userId, fileId));
+    }
+
+    /**
+     * 保存单个文档元信息。
+     */
+    @PutMapping("/{fileId}/metadata")
+    public ApiResponse<DocumentMetadataResponse> saveMetadata(@RequestHeader("X-User-Id") Long userId,
+                                                              @PathVariable("fileId") String fileId,
+                                                              @RequestBody DocumentMetadataRequest request) {
+        return ApiResponse.success("元信息已保存", fileService.saveMetadata(userId, fileId, request));
+    }
+
+    /**
+     * 预留 AI 元信息填写接口。
+     */
+    @PostMapping("/{fileId}/metadata/ai-suggest")
+    public ApiResponse<AiMetadataSuggestResponse> suggestMetadata(@RequestHeader("X-User-Id") Long userId,
+                                                                  @PathVariable("fileId") String fileId) {
+        return ApiResponse.success(fileService.suggestMetadata(userId, fileId));
     }
 
     /**

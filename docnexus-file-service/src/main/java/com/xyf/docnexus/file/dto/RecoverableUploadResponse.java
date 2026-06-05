@@ -25,4 +25,5 @@ public class RecoverableUploadResponse {
     private List<Integer> uploadedChunkIndexes;
     private String status;
     private String errorMessage;
+    private String metadataDraftJson;
 }

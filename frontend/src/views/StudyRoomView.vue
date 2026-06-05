@@ -73,8 +73,8 @@
             <div v-for="file in files" :key="file.fileId" class="material-item">
               <span class="material-icon"><Document /></span>
               <span>
-                <strong>{{ file.fileName }}</strong>
-                <small>{{ statusText(file) }} · {{ file.fileType || 'unknown' }}</small>
+                <strong :title="file.fileName">{{ displayFileName(file.fileName) }}</strong>
+                <small>{{ statusText(file) }} · {{ displayFileType(file) }}</small>
               </span>
             </div>
             <div v-if="files.length === 0" class="sidebar-empty">暂无资料，请先上传并等待索引完成。</div>
@@ -108,7 +108,7 @@
                 <div class="rendered-message" v-html="formatMessage(message.content)"></div>
                 <div v-if="message.sources?.length" class="source-list">
                   <span v-for="source in message.sources" :key="sourceKey(source)">
-                    {{ source.fileName || '未知资料' }}
+                    {{ displayFileName(source.fileName || '未知资料') }}
                   </span>
                 </div>
               </div>
@@ -159,6 +159,7 @@ import DOMPurify from 'dompurify'
 import 'katex/dist/katex.min.css'
 import request from '../utils/request'
 import { filterDeletingFiles, subscribeFileDeleting } from '../utils/deletedFiles'
+import { removeFileExtension, resolveFileTypeLabel } from '../utils/fileDisplay'
 
 const conversationId = ref('')
 const conversations = ref([])
@@ -187,6 +188,14 @@ function statusText(file) {
 
 function sourceKey(source) {
   return source.fileName || source.fileId || Math.random()
+}
+
+function displayFileName(fileName) {
+  return removeFileExtension(fileName)
+}
+
+function displayFileType(file) {
+  return file.fileType || resolveFileTypeLabel(file.fileName || file.filename, 'unknown')
 }
 
 function normalizeSources(sources) {

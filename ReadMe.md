@@ -15,6 +15,13 @@ DocNexus Cloud 是一个面向资料上传、文档解析、知识理解、AI �
  -> 用户日志可追踪主动操作
 ```
 
+当前开发状态：
+
+```text
+正在开发 AI 相关能力，目前正在完整知识库构建。
+重点推进文档解析、上传元信息、父子分块、混合检索、知识图谱和 Agent 全链路追踪。
+```
+
 ## 一、项目结构
 
 | 目录 | 说明 |
@@ -259,6 +266,7 @@ http://127.0.0.1:5173
 只上传 application.example.* 和 .env.example
 不上传真实配置、密钥、证书、日志、运行时文件、构建产物和依赖目录
 不上传 target、dist、node_modules、.venv、__pycache__
+不上传 new_front，当前正式前端只使用 frontend
 不上传本地 OnlyOffice 字体、MinIO 数据、RocketMQ 数据、Nacos 数据
 ```
 

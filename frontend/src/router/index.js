@@ -11,6 +11,7 @@ const routes = [
   { path: '/workspace', component: () => import('../views/WorkspaceView.vue') },
   { path: '/profile', component: () => import('../views/UserProfileView.vue') },
   { path: '/knowledge', component: () => import('../views/KnowledgeLibraryView.vue') },
+  { path: '/knowledge/parse-workspace/:id', component: () => import('../views/DocumentParseWorkspaceView.vue') },
   { path: '/study', component: () => import('../views/StudyRoomView.vue') },
   { path: '/ai-logs', component: () => import('../views/AiLogSystemView.vue') },
   { path: '/knowledge-map', redirect: '/knowledge' },

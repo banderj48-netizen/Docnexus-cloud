@@ -13,6 +13,8 @@ public class FileViewResponse {
     private String fileId;
     private String uploadId;
     private String name;
+    private String originalName;
+    private String displayName;
     private String type;
     private String fileExt;
     private Long fileSize;
@@ -30,6 +32,17 @@ public class FileViewResponse {
     private String graphTone;
     private Integer progress;
     private String errorMessage;
+    private String knowledgeSpaceCode;
+    private String knowledgeSpaceName;
+    private String businessCategoryCode;
+    private String businessCategoryName;
+    private String documentType;
+    private String documentTagsJson;
+    private String metadataStatus;
+    private String courseName;
+    private String projectName;
+    private String termName;
+    private String sourceType;
     private Integer parseRetryCount;
     private Integer currentVersion;
     private Boolean editable;

@@ -65,6 +65,11 @@ public class DocumentParseDeadLetterConsumer implements RocketMQListener<Documen
                     "NONE",
                     null,
                     null,
+                    null,
+                    0,
+                    0,
+                    0,
+                    0,
                     "解析请求多次失败，请稍后再试"
             );
             fileCacheService.increaseVersion(event.getUserId(), file.getKnowledgeBaseId());
@@ -73,6 +78,11 @@ public class DocumentParseDeadLetterConsumer implements RocketMQListener<Documen
             file.setGraphStatus("NONE");
             file.setSummary(null);
             file.setKeywordsJson(null);
+            file.setAiMetadataJson(null);
+            file.setParseQualityScore(0);
+            file.setParentChunkCount(0);
+            file.setChildChunkCount(0);
+            file.setAssetCount(0);
             file.setErrorMessage("解析请求多次失败，请稍后再试");
             documentFileLookupService.cacheFile(file);
         } finally {

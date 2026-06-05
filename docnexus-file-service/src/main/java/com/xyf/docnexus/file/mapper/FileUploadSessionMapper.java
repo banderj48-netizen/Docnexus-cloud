@@ -21,14 +21,18 @@ public interface FileUploadSessionMapper {
      */
     @Insert("""
             INSERT INTO file_upload_session (
-                upload_id, user_id, file_id, knowledge_base_id, file_name,
+                upload_id, user_id, file_id, knowledge_base_id, file_name, display_name,
                 file_size, file_category, file_ext, mime_type, file_sha256,
+                knowledge_space_code, knowledge_space_name, business_category_code, business_category_name,
+                document_type, document_tags_json, metadata_draft_json,
                 chunk_size, total_chunks, uploaded_chunks, status, bucket_name,
                 object_key, temp_bucket_name, temp_prefix, error_message, expires_at,
                 created_at, updated_at
             ) VALUES (
-                #{uploadId}, #{userId}, #{fileId}, #{knowledgeBaseId}, #{fileName},
+                #{uploadId}, #{userId}, #{fileId}, #{knowledgeBaseId}, #{fileName}, #{displayName},
                 #{fileSize}, #{fileCategory}, #{fileExt}, #{mimeType}, #{fileSha256},
+                #{knowledgeSpaceCode}, #{knowledgeSpaceName}, #{businessCategoryCode}, #{businessCategoryName},
+                #{documentType}, #{documentTagsJson}, #{metadataDraftJson},
                 #{chunkSize}, #{totalChunks}, #{uploadedChunks}, #{status}, #{bucketName},
                 #{objectKey}, #{tempBucketName}, #{tempPrefix}, #{errorMessage}, #{expiresAt},
                 NOW(), NOW()

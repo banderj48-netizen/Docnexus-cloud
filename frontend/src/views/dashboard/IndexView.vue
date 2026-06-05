@@ -125,8 +125,8 @@
                 <!-- 卡片下半部分 -->
                 <div class="card-info">
                   <div class="info-top">
-                    <el-tooltip :content="doc.name" placement="top" :show-after="500">
-                      <div class="doc-name" @click="goToEditor(doc.id, doc.name)">{{ doc.name }}</div>
+                    <el-tooltip :content="doc.displayName" placement="top" :show-after="500">
+                      <div class="doc-name" @click="goToEditor(doc.id, doc.name)">{{ doc.displayName }}</div>
                     </el-tooltip>
                     <el-dropdown trigger="click" @command="(cmd) => handleCardCommand(cmd, doc)">
                       <el-icon class="more-btn"><MoreFilled /></el-icon>
@@ -140,6 +140,7 @@
                     </el-dropdown>
                   </div>
                   <div class="doc-meta">
+                    <span class="doc-type">{{ doc.typeLabel }}</span>
                     <span>{{ doc.time }}</span>
                     <el-tag size="small" :type="doc.analyzed ? 'success' : 'info'" round effect="light">
                       {{ doc.analyzed ? 'AI已就绪' : '待处理' }}
@@ -168,6 +169,7 @@ import { docApi } from '../../api/document'
 import { STORAGE_KEYS } from '../../constants'
 import { isAdmin } from '../../utils/jwt'
 import { logout } from '../../utils/auth'
+import { removeFileExtension, resolveFileTypeLabel } from '../../utils/fileDisplay'
 
 const router = useRouter()
 const loading = ref(false)
@@ -200,6 +202,8 @@ const fetchFiles = async () => {
         id: item.id,
         fileId: item.fileId,
         name: item.title || '未命名文档',
+        displayName: removeFileExtension(item.title || '未命名文档'),
+        typeLabel: resolveFileTypeLabel(item.title || ''),
         time: item.createTime ? new Date(item.createTime).toLocaleDateString() : '未知',
         analyzed: !!item.summary,
         color: ['bg-blue', 'bg-orange', 'bg-green', 'bg-purple'][Math.floor(Math.random() * 4)]
@@ -230,6 +234,8 @@ const handleSearch = async () => {
         id: item.id,
         fileId: item.fileId,
         name: item.title,
+        displayName: removeFileExtension(item.title || '未命名文档'),
+        typeLabel: resolveFileTypeLabel(item.title || ''),
         time: new Date(item.createTime).toLocaleDateString(),
         color: ['bg-blue', 'bg-orange', 'bg-green', 'bg-purple'][Math.floor(Math.random() * 4)]
       }))
@@ -271,7 +277,7 @@ const onFileSelected = async (event) => {
       category: 'default'
     })
 
-    ElMessage.success(`《${rawFile.name}》已成功存入云端！`)
+    ElMessage.success(`《${removeFileExtension(rawFile.name)}》已成功存入云端！`)
     fetchFiles()
     event.target.value = ''
   } catch (e) {
@@ -282,7 +288,7 @@ const onFileSelected = async (event) => {
 // 卡片逻辑(删除下载)
 const handleCardCommand = async (cmd, doc) => {
   if (cmd === 'delete') {
-    ElMessageBox.confirm(`确定要永久删除《${doc.name}》吗？`).then(async () => {
+    ElMessageBox.confirm(`确定要永久删除《${doc.displayName}》吗？`).then(async () => {
       loading.value = true
       try {
         await docApi.deleteDoc(doc.id)
@@ -312,7 +318,7 @@ const handleCardCommand = async (cmd, doc) => {
       const blob = new Blob([wordHtml], { type: 'application/msword' })
       const url = window.URL.createObjectURL(blob)
       const link = document.createElement('a')
-      link.href = url; link.setAttribute('download', `[最新]_${doc.name}.doc`)
+      link.href = url; link.setAttribute('download', `[最新]_${removeFileExtension(doc.name)}.doc`)
       document.body.appendChild(link); link.click(); document.body.removeChild(link)
       window.URL.revokeObjectURL(url); ElMessage.success('下载完成')
     } catch (e) { ElMessage.error('获取最新内容失败') }
@@ -423,6 +429,8 @@ const goToAIOps = () => {
 .info-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
 .doc-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #1f2329; cursor: pointer; flex: 1; }
 .more-btn { color: #8f959e; cursor: pointer; font-size: 18px; }
+.doc-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; color: #8f959e; font-size: 12px; }
+.doc-type { min-width: 44px; height: 22px; padding: 0 8px; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; background: #e8f7f1; color: #008d72; font-weight: 700; }
 
 .bg-blue { background: linear-gradient(135deg, #5182ff, #a0cfff); }
 .bg-orange { background: linear-gradient(135deg, #edab56, #f3d19e); }

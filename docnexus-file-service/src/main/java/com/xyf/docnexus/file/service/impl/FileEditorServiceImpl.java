@@ -78,7 +78,7 @@ public class FileEditorServiceImpl implements FileEditorService {
         if (PDF_EXTENSIONS.contains(fileExt)) {
             return new FileEditorResponse(
                     file.getFileId(),
-                    file.getOriginalName(),
+                    displayName(file),
                     file.getFileExt(),
                     false,
                     currentVersion,
@@ -107,7 +107,7 @@ public class FileEditorServiceImpl implements FileEditorService {
 
         return new FileEditorResponse(
                 file.getFileId(),
-                file.getOriginalName(),
+                displayName(file),
                 file.getFileExt(),
                 file.getEditable() != null && file.getEditable() == 1,
                 currentVersion,
@@ -323,5 +323,14 @@ public class FileEditorServiceImpl implements FileEditorService {
      */
     private String normalizedExt(DocumentFile file) {
         return file.getFileExt() == null ? "" : file.getFileExt().toLowerCase();
+    }
+
+    /**
+     * 获取前端展示名，未填写时退回原始文件名。
+     */
+    private String displayName(DocumentFile file) {
+        return file.getDisplayName() == null || file.getDisplayName().isBlank()
+                ? file.getOriginalName()
+                : file.getDisplayName();
     }
 }

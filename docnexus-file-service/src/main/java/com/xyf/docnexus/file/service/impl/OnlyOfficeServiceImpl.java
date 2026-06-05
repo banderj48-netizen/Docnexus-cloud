@@ -145,7 +145,7 @@ public class OnlyOfficeServiceImpl implements OnlyOfficeService {
 
         return new OnlyOfficeConfigResponse(
                 file.getFileId(),
-                file.getOriginalName(),
+                displayName(file),
                 file.getFileExt(),
                 true,
                 currentVersion,
@@ -357,7 +357,7 @@ public class OnlyOfficeServiceImpl implements OnlyOfficeService {
         permissions.put("comment", false);
 
         Map<String, Object> document = new LinkedHashMap<>();
-        document.put("title", file.getOriginalName());
+        document.put("title", displayName(file));
         document.put("url", sourceUrl);
         document.put("fileType", fileExt);
         document.put("key", documentKey);
@@ -831,6 +831,15 @@ public class OnlyOfficeServiceImpl implements OnlyOfficeService {
      */
     private String normalizedExt(DocumentFile file) {
         return file.getFileExt() == null ? "" : file.getFileExt().toLowerCase();
+    }
+
+    /**
+     * 获取前端展示名，未填写时退回原始文件名。
+     */
+    private String displayName(DocumentFile file) {
+        return file.getDisplayName() == null || file.getDisplayName().isBlank()
+                ? file.getOriginalName()
+                : file.getDisplayName();
     }
 
     /**

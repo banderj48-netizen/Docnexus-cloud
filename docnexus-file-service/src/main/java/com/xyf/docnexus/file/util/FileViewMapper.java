@@ -22,7 +22,9 @@ public final class FileViewMapper {
         FileViewResponse response = new FileViewResponse();
         response.setId(file.getFileId());
         response.setFileId(file.getFileId());
-        response.setName(file.getOriginalName());
+        response.setName(file.getDisplayName() == null || file.getDisplayName().isBlank() ? file.getOriginalName() : file.getDisplayName());
+        response.setOriginalName(file.getOriginalName());
+        response.setDisplayName(file.getDisplayName() == null || file.getDisplayName().isBlank() ? file.getOriginalName() : file.getDisplayName());
         response.setType(FileTypeResolver.shortType(file.getOriginalName()));
         response.setFileExt(file.getFileExt());
         response.setFileSize(file.getFileSize());
@@ -40,6 +42,17 @@ public final class FileViewMapper {
         response.setGraphTone(resolveGraphTone(file.getGraphStatus()));
         response.setProgress(resolveProgress(file.getParseStatus()));
         response.setErrorMessage(file.getErrorMessage());
+        response.setKnowledgeSpaceCode(file.getKnowledgeSpaceCode());
+        response.setKnowledgeSpaceName(file.getKnowledgeSpaceName());
+        response.setBusinessCategoryCode(file.getBusinessCategoryCode());
+        response.setBusinessCategoryName(file.getBusinessCategoryName());
+        response.setDocumentType(file.getDocumentType());
+        response.setDocumentTagsJson(file.getDocumentTagsJson());
+        response.setMetadataStatus(file.getMetadataStatus());
+        response.setCourseName(file.getCourseName());
+        response.setProjectName(file.getProjectName());
+        response.setTermName(file.getTermName());
+        response.setSourceType(file.getSourceType());
         response.setParseRetryCount(file.getParseRetryCount() == null ? 0 : file.getParseRetryCount());
         response.setCurrentVersion(file.getCurrentVersion() == null ? 1 : file.getCurrentVersion());
         response.setEditable(file.getEditable() != null && file.getEditable() == 1);

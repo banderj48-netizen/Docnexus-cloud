@@ -16,6 +16,7 @@ target/
 *.ear
 
 # 前端依赖、缓存和构建产物
+new_front/
 node_modules/
 **/node_modules/
 dist/

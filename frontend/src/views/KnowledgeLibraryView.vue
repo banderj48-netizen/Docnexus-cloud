@@ -61,32 +61,32 @@
           </div>
           <div class="document-meta">
             <div class="document-title-row">
-              <h2 :title="file.name">{{ file.name }}</h2>
+              <h2 :title="file.name">{{ file.displayName }}</h2>
               <el-dropdown trigger="click" @click.stop>
                 <button class="more-button" type="button" title="更多操作" @click.stop>
                   <MoreFilled />
                 </button>
                 <template #dropdown>
                   <el-dropdown-menu>
-                    <el-dropdown-item @click="downloadFile(file)">
+                    <el-dropdown-item class="file-menu-item download-menu-item" @click="downloadFile(file)">
                       <Download />
-                      下载到本地
+                      <span>下载到本地</span>
                     </el-dropdown-item>
-                    <el-dropdown-item v-if="canSubmitParse(file)" @click="parseFile(file)">
+                    <el-dropdown-item v-if="canSubmitParse(file)" class="file-menu-item parse-menu-item" @click.stop="parseFile(file)">
                       <Refresh />
-                      解析
+                      <span>解析文档</span>
                     </el-dropdown-item>
-                    <el-dropdown-item v-else-if="canRetryParse(file)" @click="parseFile(file)">
+                    <el-dropdown-item v-else-if="canRetryParse(file)" class="file-menu-item parse-menu-item" @click.stop="parseFile(file)">
                       <Refresh />
-                      重新解析
+                      <span>重新解析</span>
                     </el-dropdown-item>
                     <el-dropdown-item v-else-if="isRetryExhausted(file)" @click="showParseAlarm">
                       <WarningFilled />
                       解析报警
                     </el-dropdown-item>
-                    <el-dropdown-item class="danger-item" @click="deleteFile(file)">
+                    <el-dropdown-item class="file-menu-item danger-item" @click="deleteFile(file)">
                       <Delete />
-                      删除文档
+                      <span>删除文档</span>
                     </el-dropdown-item>
                   </el-dropdown-menu>
                 </template>
@@ -110,46 +110,152 @@
 
       <el-dialog
         v-model="uploadDialogVisible"
-        title="上传列表"
-        width="720px"
+        title="上传队列与文档信息"
+        width="980px"
         :close-on-click-modal="false"
         :before-close="handleUploadDialogClose"
       >
         <div class="upload-dialog-body">
           <div class="upload-rules">
             <strong>文件限制</strong>
-            <span>单个文件最大 200MB；小于 5MB 直接上传，5MB 起按至少 5MB 分片上传并支持断点续传；暂不支持图片、视频、Excel 和外链图床。</span>
+            <span>单个文件最大 200MB；小于 5MB 直接上传，5MB 起按至少 5MB 分片上传并支持断点续传。文档信息可以先不填，系统会按默认个人资料库保存，后续解析时再补全。</span>
+          </div>
+          <div v-if="uploadItems.length" class="upload-batch-actions">
+            <button class="mini-action-button" type="button" @click="applyCurrentCategoryToLater(activeUploadItem, activeUploadIndex)">
+              套用当前分类到后续
+            </button>
+            <button class="mini-action-button" type="button" @click="applyCurrentSpaceToLater(activeUploadItem, activeUploadIndex)">
+              只套用知识域
+            </button>
+            <button class="mini-action-button" type="button" @click="clearEmptyMetadataFields(activeUploadItem)">
+              清空未填写项
+            </button>
           </div>
           <div class="upload-list">
-            <article v-for="item in uploadItems" :key="item.id" class="upload-item" :class="item.status">
-              <div class="upload-file-icon" :class="item.coverTone">
-                <component :is="item.icon" />
-              </div>
-              <div class="upload-copy">
-                <strong :title="item.name">{{ item.name }}</strong>
-                <span>{{ item.sizeText }} · {{ item.statusText }}</span>
-                <em v-if="item.errorMessage">{{ item.errorMessage }}</em>
-                <div class="upload-progress">
-                  <i><b :style="{ width: `${item.progress}%` }"></b></i>
-                  <small>{{ item.progress }}%</small>
+            <article v-for="(item, index) in uploadItems" :key="item.id" class="upload-item" :class="item.status">
+              <div class="upload-item-main">
+                <div class="upload-file-icon" :class="item.coverTone">
+                  <component :is="item.icon" />
                 </div>
-                <div v-if="item.status === 'failed'" class="upload-item-actions">
-                  <button class="mini-action-button" type="button" @click="retryUploadItem(item)">
-                    <Refresh />
-                    重新上传
-                  </button>
-                  <button class="mini-action-button danger" type="button" @click="discardUploadItem(item)">
-                    <Delete />
-                    移除
-                  </button>
+                <div class="upload-copy">
+                  <strong :title="item.name">{{ item.metadata.displayName || item.displayName }}</strong>
+                  <span>{{ item.name }} · {{ item.sizeText }} · {{ item.statusText }} · {{ resolveMetadataStatusText(item) }}</span>
+                  <em v-if="item.errorMessage">{{ item.errorMessage }}</em>
+                  <div v-if="isActiveUploadingItem(item)" class="upload-progress">
+                    <i><b :style="{ width: `${item.progress}%` }"></b></i>
+                    <small>{{ item.progress }}%</small>
+                  </div>
+                  <div class="upload-item-actions">
+                    <button class="mini-action-button" type="button" @click="toggleUploadItem(item)">
+                      {{ item.expanded ? '收起信息' : '展开信息' }}
+                    </button>
+                    <button class="mini-action-button" type="button" :disabled="item.aiFilling" @click="fillMetadataByAi(item)">
+                      <Refresh />
+                      {{ item.aiFilling ? '识别中' : 'AI 解析填写' }}
+                    </button>
+                    <button v-if="item.status === 'failed'" class="mini-action-button" type="button" @click="retryUploadItem(item)">
+                      <Refresh />
+                      重新上传
+                    </button>
+                    <button v-if="item.status === 'failed'" class="mini-action-button danger" type="button" @click="discardUploadItem(item)">
+                      <Delete />
+                      移除
+                    </button>
+                    <button v-if="item.status === 'waiting'" class="mini-action-button danger" type="button" @click="removeWaitingUploadItem(item)">
+                      <Delete />
+                      移除
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <div v-if="item.expanded" class="metadata-panel">
+                <div class="metadata-panel-head">
+                  <strong>文档信息</strong>
+                  <span>第 {{ index + 1 }} 个文件，上传后会按这些信息进入文档库。</span>
+                </div>
+                <div class="metadata-form">
+                  <label>
+                    <span>文档名称</span>
+                    <el-input v-model="item.metadata.displayName" placeholder="不填则使用原始文件名" />
+                  </label>
+                  <label>
+                    <span>一级知识域</span>
+                    <el-select v-model="item.metadata.knowledgeSpaceCode" @change="handleMetadataSpaceChange(item)">
+                      <el-option
+                        v-for="option in knowledgeSpaceOptions"
+                        :key="option.code"
+                        :label="option.name"
+                        :value="option.code"
+                      />
+                    </el-select>
+                  </label>
+                  <label>
+                    <span>二级分类</span>
+                    <el-select v-model="item.metadata.businessCategoryCode" @change="handleMetadataCategoryChange(item)">
+                      <el-option
+                        v-for="option in categoryOptionsFor(item.metadata.knowledgeSpaceCode)"
+                        :key="option.code"
+                        :label="option.name"
+                        :value="option.code"
+                      />
+                    </el-select>
+                  </label>
+                  <label>
+                    <span>文档类型</span>
+                    <el-select v-model="item.metadata.documentType">
+                      <el-option
+                        v-for="option in documentTypeOptions"
+                        :key="option.code"
+                        :label="option.name"
+                        :value="option.code"
+                      />
+                    </el-select>
+                  </label>
+                  <label>
+                    <span>标签</span>
+                    <el-input v-model="item.tagsText" placeholder="多个标签用逗号或回车分隔" @change="syncTagsFromText(item)" />
+                  </label>
+                  <label>
+                    <span>课程/项目</span>
+                    <el-input v-model="item.metadata.courseName" placeholder="课程名，可选" />
+                  </label>
+                  <label>
+                    <span>课题/项目名</span>
+                    <el-input v-model="item.metadata.projectName" placeholder="课题、项目或申请方向，可选" />
+                  </label>
+                  <label>
+                    <span>学期</span>
+                    <el-input v-model="item.metadata.termName" placeholder="如 研一上 / 2026 春" />
+                  </label>
+                  <label>
+                    <span>来源</span>
+                    <el-select v-model="item.metadata.sourceType">
+                      <el-option
+                        v-for="option in sourceTypeOptions"
+                        :key="option.code"
+                        :label="option.name"
+                        :value="option.code"
+                      />
+                    </el-select>
+                  </label>
+                  <label class="metadata-note">
+                    <span>备注</span>
+                    <el-input v-model="item.metadata.note" type="textarea" :rows="2" placeholder="可记录这份资料的用途、老师要求或后续处理提示" />
+                  </label>
                 </div>
               </div>
             </article>
           </div>
         </div>
         <template #footer>
-          <button class="outline-button" type="button" @click="handleUploadDialogClose(() => {})">关闭</button>
-          <button class="primary-button" type="button" @click="handleContinueAdd">继续添加</button>
+          <div class="upload-footer-actions">
+            <button class="outline-button" type="button" @click="handleUploadDialogClose(() => {})">关闭</button>
+            <button class="outline-button" type="button" @click="handleContinueAdd">继续添加</button>
+            <button class="primary-button" type="button" :disabled="!canStartUpload" @click="startUploadQueue">
+              <UploadFilled />
+              {{ uploading ? '上传中' : '开始上传' }}
+            </button>
+          </div>
         </template>
       </el-dialog>
     </main>
@@ -176,6 +282,7 @@ import {
 import StudioLayout from '../components/StudioLayout.vue'
 import { fileApi } from '../api/file'
 import { notifyUserOperationChanged } from '../utils/sidebarStats'
+import { removeFileExtension } from '../utils/fileDisplay'
 
 const router = useRouter()
 const fileInputRef = ref(null)
@@ -187,17 +294,81 @@ const uploadItems = ref([])
 const uploading = ref(false)
 const currentUpload = ref(null)
 const cancelUploadQueueRequested = ref(false)
+const uploadMetadataOptions = ref(null)
 
 const maxFileSize = 200 * 1024 * 1024
 const minChunkSize = 5 * 1024 * 1024
 const supportedExtensions = new Set(['pdf', 'txt', 'doc', 'docx', 'ppt', 'pptx', 'wps', 'wpt', 'dps', 'dpt', 'wpd'])
+const fallbackMetadataOptions = {
+  knowledgeSpaces: [
+    { code: 'personal', name: '个人资料库', categories: [{ code: 'general', name: '通用资料' }, { code: 'personal_note', name: '个人笔记' }, { code: 'reading_material', name: '阅读资料' }, { code: 'template', name: '模板' }, { code: 'personal_other', name: '其他' }] },
+    { code: 'course', name: '课程学习', categories: [{ code: 'textbook', name: '教材/课本' }, { code: 'lecture_note', name: '课件/讲义' }, { code: 'course_reading', name: '课程阅读材料' }, { code: 'homework', name: '作业/实验' }, { code: 'lab_report', name: '实验报告' }, { code: 'exercise', name: '习题/题库' }, { code: 'course_project', name: '课程项目' }, { code: 'course_other', name: '其他' }] },
+    { code: 'research', name: '科研文献', categories: [{ code: 'paper', name: '学术论文' }, { code: 'thesis', name: '学位论文' }, { code: 'review', name: '综述' }, { code: 'book_chapter', name: '专著/章节' }, { code: 'technical_report', name: '技术报告' }, { code: 'patent_standard', name: '专利/标准' }, { code: 'dataset_table', name: '数据集/表格' }, { code: 'reference_bibliography', name: '参考文献清单' }, { code: 'research_other', name: '其他' }] },
+    { code: 'writing', name: '写作与规范', categories: [{ code: 'writing_rule', name: '论文/报告写作要求' }, { code: 'format_template', name: '格式模板' }, { code: 'rubric', name: '评分标准' }, { code: 'citation_rule', name: '引用规范' }, { code: 'proposal_requirement', name: '开题/中期要求' }, { code: 'defense_material', name: '答辩材料' }, { code: 'writing_other', name: '其他' }] },
+    { code: 'application', name: '申请与事务', categories: [{ code: 'application_form', name: '申请表/报名表' }, { code: 'resume', name: '简历' }, { code: 'personal_statement', name: '个人陈述' }, { code: 'recommendation_letter', name: '推荐信' }, { code: 'certificate', name: '证书/证明' }, { code: 'scholarship', name: '奖学金/资助' }, { code: 'internship_job', name: '实习/就业材料' }, { code: 'visa_admin', name: '签证/行政材料' }, { code: 'application_other', name: '其他' }] },
+    { code: 'project', name: '项目与报告', categories: [{ code: 'project_report', name: '项目报告' }, { code: 'research_plan', name: '研究计划' }, { code: 'survey_report', name: '调研报告' }, { code: 'meeting_minutes', name: '会议纪要' }, { code: 'presentation', name: '展示/PPT' }, { code: 'project_dataset', name: '项目数据/表格' }, { code: 'project_requirement', name: '项目要求/说明' }, { code: 'project_other', name: '其他' }] },
+    { code: 'exam', name: '考试与复习', categories: [{ code: 'exam_paper', name: '试卷/真题' }, { code: 'review_note', name: '复习资料' }, { code: 'mistake_note', name: '错题整理' }, { code: 'exercise', name: '习题/题库' }, { code: 'exam_outline', name: '考试大纲' }, { code: 'exam_other', name: '其他' }] },
+    { code: 'campus_life', name: '校园生活', categories: [{ code: 'schedule_plan', name: '日程/计划' }, { code: 'club_activity', name: '社团/活动' }, { code: 'life_service', name: '生活服务' }, { code: 'finance_receipt', name: '票据/报销' }, { code: 'medical_health', name: '医疗/健康' }, { code: 'campus_other', name: '其他' }] },
+  ],
+  documentTypes: [
+    { code: 'ACADEMIC_PAPER', name: '学术论文' },
+    { code: 'THESIS_DISSERTATION', name: '学位论文' },
+    { code: 'REVIEW_ARTICLE', name: '综述' },
+    { code: 'BOOK_TEXTBOOK', name: '教材/书籍' },
+    { code: 'COURSE_MATERIAL', name: '课程资料' },
+    { code: 'ASSIGNMENT_HOMEWORK', name: '作业/实验' },
+    { code: 'EXAM_REVIEW', name: '考试复习' },
+    { code: 'APPLICATION_FORM', name: '申请表' },
+    { code: 'RESUME_PROFILE', name: '简历' },
+    { code: 'CERTIFICATE_PROOF', name: '证书/证明' },
+    { code: 'PROJECT_REPORT', name: '项目报告' },
+    { code: 'RESEARCH_PROPOSAL', name: '研究计划/开题' },
+    { code: 'WRITING_REQUIREMENT', name: '写作要求' },
+    { code: 'PRESENTATION', name: 'PPT/展示' },
+    { code: 'SPREADSHEET_TABLE', name: '表格/数据' },
+    { code: 'ADMINISTRATIVE_DOCUMENT', name: '行政事务文档' },
+    { code: 'LIFE_RECORD', name: '生活记录' },
+    { code: 'OTHER_DOCUMENT', name: '其他文档' },
+    { code: 'GENERAL_DOCUMENT', name: '通用文档' },
+  ],
+  sourceTypes: [
+    { code: 'USER_UPLOAD', name: '用户上传' },
+    { code: 'TEACHER_PROVIDED', name: '老师发放' },
+    { code: 'PAPER_DATABASE', name: '论文数据库' },
+    { code: 'SELF_ORGANIZED', name: '自己整理' },
+    { code: 'OTHER', name: '其他' },
+  ],
+}
 
 const parsingCount = computed(() => libraryFiles.value.filter((file) => ['PROCESSING', 'PENDING'].includes(file.parseStatus)).length)
 const failedCount = computed(() => libraryFiles.value.filter((file) => file.parseStatus === 'FAILED').length)
+const metadataOptions = computed(() => uploadMetadataOptions.value || fallbackMetadataOptions)
+const knowledgeSpaceOptions = computed(() => metadataOptions.value.knowledgeSpaces || [])
+const documentTypeOptions = computed(() => metadataOptions.value.documentTypes || fallbackMetadataOptions.documentTypes)
+const sourceTypeOptions = computed(() => metadataOptions.value.sourceTypes || fallbackMetadataOptions.sourceTypes)
+const activeUploadIndex = computed(() => {
+  const expandedIndex = uploadItems.value.findIndex((item) => item.expanded)
+  return expandedIndex >= 0 ? expandedIndex : 0
+})
+const activeUploadItem = computed(() => uploadItems.value[activeUploadIndex.value] || uploadItems.value[0] || null)
+const canStartUpload = computed(() => !uploading.value && uploadItems.value.some((item) => item.status === 'waiting'))
 
 onMounted(() => {
+  loadMetadataOptions()
   loadFileList()
 })
+
+/**
+ * 加载上传元信息选项，失败时保留前端兜底分类。
+ */
+const loadMetadataOptions = async () => {
+  try {
+    const response = await fileApi.getUploadMetadataOptions()
+    uploadMetadataOptions.value = response.data || fallbackMetadataOptions
+  } catch {
+    uploadMetadataOptions.value = fallbackMetadataOptions
+  }
+}
 
 /**
  * 加载当前用户已上传文档列表。
@@ -233,10 +404,18 @@ const handleFileChange = async (event) => {
   event.target.value = ''
   if (!files.length) return
   uploadDialogVisible.value = true
+  await loadMetadataOptions()
   const recoverableMap = await loadRecoverableUploadMap()
-  const rows = files.map((file) => createUploadItem(file, recoverableMap.get(uploadFingerprint(file))))
+  const rows = files.map((file) => createUploadItem(file, recoverableMap.get(uploadFingerprint(file)), true))
   uploadItems.value = [...uploadItems.value, ...rows]
-  processUploadQueue()
+}
+
+/**
+ * 用户点击开始上传后，按当前等待列表顺序上传。
+ */
+const startUploadQueue = async () => {
+  if (!canStartUpload.value) return
+  await processUploadQueue()
 }
 
 /**
@@ -246,8 +425,9 @@ const processUploadQueue = async () => {
   if (uploading.value) return
   uploading.value = true
   cancelUploadQueueRequested.value = false
+  const pendingItems = uploadItems.value.filter((item) => item.status === 'waiting')
   try {
-    for (const item of uploadItems.value) {
+    for (const item of pendingItems) {
       if (cancelUploadQueueRequested.value) break
       if (item.status !== 'waiting') continue
       const reason = validateFile(item.file)
@@ -280,6 +460,7 @@ const uploadOne = async (item) => {
   try {
     const response = await fileApi.upload(item.file, {
       knowledgeBaseId: 'default',
+      metadata: buildUploadMetadataPayload(item),
       signal: controller.signal,
       uploadId: item.uploadId,
       chunkSize: item.chunkSize,
@@ -297,10 +478,12 @@ const uploadOne = async (item) => {
       }
     })
     item.uploadId = response.data?.uploadId || item.uploadId
+    item.fileId = response.data?.file?.fileId || response.data?.fileId || item.fileId
     item.status = 'success'
-    item.statusText = '上传成功'
+    item.statusText = '已上传，待解析'
     item.progress = 100
-    ElMessage.success(`${item.name} 上传成功`)
+    item.metadataStatusText = resolveMetadataStatusText(item)
+    ElMessage.success(`${item.metadata.displayName || item.displayName} 上传成功`)
   } catch (error) {
     item.status = controller.signal.aborted ? 'canceled' : 'failed'
     item.statusText = controller.signal.aborted ? '已取消' : '上传失败'
@@ -410,6 +593,119 @@ const resetUploadSession = (item) => {
 }
 
 /**
+ * 只有当前正在上传的文件展示进度条，等待项和已完成项保持列表简洁。
+ */
+const isActiveUploadingItem = (item) => item.status === 'uploading' && currentUpload.value?.item?.id === item.id
+
+/**
+ * 切换上传队列项的元信息表单展开状态。
+ */
+const toggleUploadItem = (item) => {
+  item.expanded = !item.expanded
+}
+
+/**
+ * 移除尚未开始上传的队列项。
+ */
+const removeWaitingUploadItem = (item) => {
+  uploadItems.value = uploadItems.value.filter((row) => row.id !== item.id)
+}
+
+/**
+ * 一级知识域变化后，自动选择该知识域下的第一个二级分类。
+ */
+const handleMetadataSpaceChange = (item) => {
+  const space = findKnowledgeSpace(item.metadata.knowledgeSpaceCode)
+  item.metadata.knowledgeSpaceName = space?.name || '个人资料库'
+  const firstCategory = space?.categories?.[0] || { code: 'general', name: '通用资料' }
+  item.metadata.businessCategoryCode = firstCategory.code
+  item.metadata.businessCategoryName = firstCategory.name
+  item.metadataStatusText = resolveMetadataStatusText(item)
+}
+
+/**
+ * 二级分类变化后，同步保存分类名称，避免后端只拿到编码。
+ */
+const handleMetadataCategoryChange = (item) => {
+  const category = categoryOptionsFor(item.metadata.knowledgeSpaceCode)
+    .find((option) => option.code === item.metadata.businessCategoryCode)
+  item.metadata.businessCategoryName = category?.name || '通用资料'
+  item.metadataStatusText = resolveMetadataStatusText(item)
+}
+
+/**
+ * 把标签输入框拆成数组，支持逗号、中文逗号、换行和回车。
+ */
+const syncTagsFromText = (item) => {
+  item.metadata.documentTags = splitTags(item.tagsText)
+  item.tagsText = item.metadata.documentTags.join('，')
+  item.metadataStatusText = resolveMetadataStatusText(item)
+}
+
+/**
+ * AI 解析填写按钮：上传前按文件名轻量推荐，上传后优先请求后端建议。
+ */
+const fillMetadataByAi = async (item) => {
+  item.aiFilling = true
+  try {
+    const suggestion = item.fileId
+      ? (await fileApi.suggestMetadata(item.fileId)).data
+      : guessMetadataByFileName(item.name)
+    applyMetadataSuggestion(item, suggestion)
+    item.expanded = true
+    item.metadataStatusText = 'AI 已建议'
+    ElMessage.success('已生成元信息建议，可继续手动调整')
+  } catch (error) {
+    ElMessage.warning(error?.message || 'AI 元信息建议暂不可用，已保留手动填写')
+  } finally {
+    item.aiFilling = false
+  }
+}
+
+/**
+ * 将当前文件的知识域、二级分类和文档类型套用到后续队列项。
+ */
+const applyCurrentCategoryToLater = (item, index) => {
+  if (!item || index < 0) return
+  uploadItems.value.slice(index + 1).forEach((row) => {
+    row.metadata.knowledgeSpaceCode = item.metadata.knowledgeSpaceCode
+    row.metadata.knowledgeSpaceName = item.metadata.knowledgeSpaceName
+    row.metadata.businessCategoryCode = item.metadata.businessCategoryCode
+    row.metadata.businessCategoryName = item.metadata.businessCategoryName
+    row.metadata.documentType = item.metadata.documentType
+    row.metadata.sourceType = item.metadata.sourceType
+    row.metadataStatusText = resolveMetadataStatusText(row)
+  })
+  ElMessage.success('已套用分类到后续文件')
+}
+
+/**
+ * 只把当前一级知识域套用到后续队列项，二级分类按对应知识域默认值重置。
+ */
+const applyCurrentSpaceToLater = (item, index) => {
+  if (!item || index < 0) return
+  uploadItems.value.slice(index + 1).forEach((row) => {
+    row.metadata.knowledgeSpaceCode = item.metadata.knowledgeSpaceCode
+    handleMetadataSpaceChange(row)
+  })
+  ElMessage.success('已套用知识域到后续文件')
+}
+
+/**
+ * 清空当前项的可选补充字段，保留名称和分类，方便用户重填。
+ */
+const clearEmptyMetadataFields = (item) => {
+  if (!item) return
+  item.metadata.documentTags = []
+  item.metadata.courseName = ''
+  item.metadata.projectName = ''
+  item.metadata.termName = ''
+  item.metadata.note = ''
+  item.tagsText = ''
+  item.metadataStatusText = resolveMetadataStatusText(item)
+}
+
+/**
  * 关闭上传弹窗，上传中时提示并取消当前文件。
  */
 const handleUploadDialogClose = async (done) => {
@@ -451,7 +747,7 @@ const downloadFile = async (file) => {
   const url = window.URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = file.name
+  link.download = file.downloadName || file.name
   link.click()
   window.URL.revokeObjectURL(url)
 }
@@ -460,7 +756,7 @@ const downloadFile = async (file) => {
  * 删除文档。
  */
 const deleteFile = async (file) => {
-  await ElMessageBox.confirm(`确定删除「${file.name}」吗？`, '删除文档', {
+  await ElMessageBox.confirm(`确定删除「${file.displayName}」吗？`, '删除文档', {
     confirmButtonText: '删除',
     cancelButtonText: '取消',
     type: 'warning',
@@ -480,16 +776,21 @@ const parseFile = async (file) => {
     return
   }
   if (file.parseStatus === 'FAILED') {
-    await ElMessageBox.confirm(`解析失败，是否重新解析「${file.name}」？`, '重新解析', {
+    await ElMessageBox.confirm(`解析失败，是否重新解析「${file.displayName}」？`, '重新解析', {
       confirmButtonText: '重新解析',
       cancelButtonText: '取消',
       type: 'warning',
     })
   }
   notifyUserOperationChanged()
-  await fileApi.reindex(file.fileId)
-  ElMessage.success(file.parseStatus === 'FAILED' ? '已提交重新解析' : '已提交解析')
-  await loadFileList()
+  sessionStorage.setItem('docnexusParsePreviewFile', JSON.stringify({
+    fileId: file.fileId,
+    name: file.name,
+    typeLabel: file.typeLabel,
+    time: file.time,
+    parseStatus: file.parseStatus,
+  }))
+  router.push(`/knowledge/parse-workspace/${file.fileId}`)
 }
 
 /**
@@ -520,17 +821,25 @@ const showParseAlarm = async () => {
 /**
  * 创建上传队列项。
  */
-const createUploadItem = (file, recoverable = null) => {
+const createUploadItem = (file, recoverable = null, expanded = false) => {
   const meta = resolveTypeMeta(file.name)
+  const metadata = createDefaultMetadata(file, recoverable)
   const uploadedChunks = recoverable?.uploadedChunks || 0
   const totalChunks = recoverable?.totalChunks || 0
   return {
     id: `upload_${Date.now()}_${Math.random().toString(16).slice(2)}`,
     file,
     name: file.name,
+    displayName: metadata.displayName || removeFileExtension(file.name),
+    expanded,
+    aiFilling: false,
+    fileId: recoverable?.fileId || '',
+    metadata,
+    tagsText: (metadata.documentTags || []).join('，'),
+    metadataStatusText: resolveMetadataStatusText({ metadata, name: file.name }),
     sizeText: formatFileSize(file.size),
     status: 'waiting',
-    statusText: recoverable?.uploadId ? '已找到断点，等待续传' : '排队中',
+    statusText: recoverable?.uploadId ? '已找到断点，等待续传' : '等待上传',
     progress: totalChunks > 0 ? Math.min(99, Math.round((uploadedChunks / totalChunks) * 100)) : 0,
     uploadId: recoverable?.uploadId || '',
     chunkSize: recoverable?.chunkSize || 0,
@@ -540,6 +849,169 @@ const createUploadItem = (file, recoverable = null) => {
     errorMessage: '',
     ...meta,
   }
+}
+
+/**
+ * 创建上传阶段元信息草稿。
+ *
+ * 默认只填系统兜底值，不根据文件名自动猜论文、作业等类型；否则用户没有填写也会被误判为已填写。
+ * 真正的智能补全只在用户点击“AI 解析填写”或后续解析 Agent 运行时发生。
+ */
+const createDefaultMetadata = (file, recoverable = null) => {
+  const recoveredDraft = parseMetadataDraft(recoverable?.metadataDraftJson)
+  return normalizeUploadMetadata({
+    ...recoveredDraft,
+    displayName: recoveredDraft.displayName || removeFileExtension(file.name),
+  }, file.name)
+}
+
+/**
+ * 整理提交给后端的上传元信息，保证名称、编码和名称同时存在。
+ */
+const buildUploadMetadataPayload = (item) => {
+  syncTagsFromText(item)
+  const normalized = normalizeUploadMetadata(item.metadata, item.name)
+  item.metadata = normalized
+  return normalized
+}
+
+/**
+ * 规范化上传元信息草稿，补齐默认知识域、分类和文档类型。
+ */
+const normalizeUploadMetadata = (metadata = {}, fileName = '') => {
+  const spaceCode = metadata.knowledgeSpaceCode || 'personal'
+  const space = findKnowledgeSpace(spaceCode) || findKnowledgeSpace('personal')
+  const categories = space?.categories?.length ? space.categories : [{ code: 'general', name: '通用资料' }]
+  const category = categories.find((item) => item.code === metadata.businessCategoryCode) || categories[0]
+  return {
+    displayName: metadata.displayName || removeFileExtension(fileName),
+    knowledgeSpaceCode: space?.code || 'personal',
+    knowledgeSpaceName: metadata.knowledgeSpaceName || space?.name || '个人资料库',
+    businessCategoryCode: category?.code || 'general',
+    businessCategoryName: metadata.businessCategoryName || category?.name || '通用资料',
+    documentType: metadata.documentType || 'GENERAL_DOCUMENT',
+    documentTags: Array.isArray(metadata.documentTags) ? metadata.documentTags : splitTags(metadata.documentTags || ''),
+    courseName: metadata.courseName || '',
+    projectName: metadata.projectName || '',
+    termName: metadata.termName || '',
+    sourceType: metadata.sourceType || 'USER_UPLOAD',
+    note: metadata.note || '',
+  }
+}
+
+/**
+ * 尝试恢复上传会话中的元信息草稿 JSON。
+ */
+const parseMetadataDraft = (value) => {
+  if (!value) return {}
+  if (typeof value === 'object') return value
+  try {
+    return JSON.parse(value)
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * 根据文件名和扩展名给出本地轻量分类建议。
+ */
+const guessMetadataByFileName = (fileName = '') => {
+  const lower = fileName.toLowerCase()
+  const ext = resolveExtension(fileName)
+  const base = {
+    displayName: removeFileExtension(fileName),
+    knowledgeSpaceCode: 'personal',
+    businessCategoryCode: 'general',
+    documentType: 'GENERAL_DOCUMENT',
+    documentTags: [],
+    sourceType: 'USER_UPLOAD',
+  }
+  if (['ppt', 'pptx', 'dps', 'dpt'].includes(ext)) {
+    return withNames({ ...base, knowledgeSpaceCode: 'project', businessCategoryCode: 'presentation', documentType: 'PRESENTATION', documentTags: ['展示'] })
+  }
+  if (lower.includes('论文') || lower.includes('paper') || lower.includes('doi')) {
+    return withNames({ ...base, knowledgeSpaceCode: 'research', businessCategoryCode: 'paper', documentType: 'ACADEMIC_PAPER', documentTags: ['论文'] })
+  }
+  if (lower.includes('作业') || lower.includes('实验') || lower.includes('homework')) {
+    return withNames({ ...base, knowledgeSpaceCode: 'course', businessCategoryCode: 'homework', documentType: 'ASSIGNMENT_HOMEWORK', documentTags: ['作业'] })
+  }
+  if (lower.includes('申请') || lower.includes('报名') || lower.includes('表')) {
+    return withNames({ ...base, knowledgeSpaceCode: 'application', businessCategoryCode: 'application_form', documentType: 'APPLICATION_FORM', documentTags: ['申请'] })
+  }
+  if (lower.includes('简历') || lower.includes('resume') || lower.includes('cv')) {
+    return withNames({ ...base, knowledgeSpaceCode: 'application', businessCategoryCode: 'resume', documentType: 'RESUME_PROFILE', documentTags: ['简历'] })
+  }
+  if (lower.includes('要求') || lower.includes('规范') || lower.includes('格式')) {
+    return withNames({ ...base, knowledgeSpaceCode: 'writing', businessCategoryCode: 'writing_rule', documentType: 'WRITING_REQUIREMENT', documentTags: ['写作要求'] })
+  }
+  return withNames(base)
+}
+
+/**
+ * 合并 AI 建议到当前草稿。
+ */
+const applyMetadataSuggestion = (item, suggestion = {}) => {
+  const next = normalizeUploadMetadata({
+    ...item.metadata,
+    ...suggestion,
+    documentTags: suggestion.documentTags || item.metadata.documentTags,
+  }, item.name)
+  item.metadata = next
+  item.tagsText = (next.documentTags || []).join('，')
+}
+
+/**
+ * 给仅有编码的建议补充中文名称。
+ */
+const withNames = (metadata) => {
+  const normalized = normalizeUploadMetadata(metadata, metadata.displayName || '')
+  return {
+    ...metadata,
+    knowledgeSpaceName: normalized.knowledgeSpaceName,
+    businessCategoryName: normalized.businessCategoryName,
+  }
+}
+
+/**
+ * 查找一级知识域选项。
+ */
+const findKnowledgeSpace = (code) => knowledgeSpaceOptions.value.find((item) => item.code === code)
+
+/**
+ * 获取某个一级知识域下的二级分类。
+ */
+const categoryOptionsFor = (spaceCode) => {
+  const space = findKnowledgeSpace(spaceCode) || findKnowledgeSpace('personal')
+  return space?.categories?.length ? space.categories : [{ code: 'general', name: '通用资料' }]
+}
+
+/**
+ * 拆分标签文本。
+ */
+const splitTags = (value) => {
+  if (Array.isArray(value)) return value.filter(Boolean)
+  return String(value || '')
+    .split(/[，,\n\r]+/)
+    .map((item) => item.trim())
+    .filter(Boolean)
+}
+
+/**
+ * 判断元信息是否仍为默认跳过状态。
+ */
+const resolveMetadataStatusText = (item) => {
+  const metadata = item?.metadata || {}
+  const hasCustomDisplay = metadata.displayName && metadata.displayName !== removeFileExtension(item?.name || '')
+  const hasCustomTaxonomy = metadata.knowledgeSpaceCode !== 'personal'
+    || metadata.businessCategoryCode !== 'general'
+    || metadata.documentType !== 'GENERAL_DOCUMENT'
+  const hasExtra = splitTags(metadata.documentTags).length > 0
+    || Boolean(metadata.courseName)
+    || Boolean(metadata.projectName)
+    || Boolean(metadata.termName)
+    || Boolean(metadata.note)
+    || (metadata.sourceType && metadata.sourceType !== 'USER_UPLOAD')
+  return hasCustomDisplay || hasCustomTaxonomy || hasExtra ? '已填写元信息' : '未填写，使用默认'
 }
 
 /**
@@ -586,10 +1058,18 @@ const validateFile = (file) => {
  * 规范化后端文件展示字段。
  */
 const normalizeFile = (file) => {
-  const meta = resolveTypeMeta(file.name || file.originalName || '')
+  const originalName = file.originalName || file.name || '未命名文档'
+  const displayName = file.displayName || file.name || removeFileExtension(originalName)
+  const meta = resolveTypeMeta(originalName)
   return {
     fileId: file.fileId || file.id,
-    name: file.name || file.originalName || '未命名文档',
+    name: originalName,
+    displayName,
+    downloadName: withOriginalExtension(displayName, originalName),
+    knowledgeSpaceName: file.knowledgeSpaceName || '个人资料库',
+    businessCategoryName: file.businessCategoryName || '通用资料',
+    documentType: file.documentType || 'GENERAL_DOCUMENT',
+    metadataStatus: file.metadataStatus || 'USER_SKIPPED',
     time: file.timeText || formatDate(file.createdAt),
     uploadStatus: file.uploadStatus || 'UPLOADED',
     uploadText: file.statusText || '已上传',
@@ -610,7 +1090,7 @@ const resolveTypeMeta = (fileName) => {
   if (ext === 'pdf') return { icon: markRaw(Document), typeLabel: 'PDF', coverTone: 'pdf' }
   if (ext === 'txt') return { icon: markRaw(Tickets), typeLabel: 'TXT', coverTone: 'txt' }
   if (['ppt', 'pptx', 'dps', 'dpt'].includes(ext)) return { icon: markRaw(Notebook), typeLabel: 'PPT', coverTone: 'ppt' }
-  if (['wps', 'wpt', 'wpd'].includes(ext)) return { icon: markRaw(Document), typeLabel: 'WPS', coverTone: 'wps' }
+  if (['wps', 'wpt', 'wpd'].includes(ext)) return { icon: markRaw(Document), typeLabel: 'WORD', coverTone: 'wps' }
   return { icon: markRaw(Document), typeLabel: 'WORD', coverTone: 'word' }
 }
 
@@ -620,6 +1100,15 @@ const resolveTypeMeta = (fileName) => {
 const resolveExtension = (fileName) => {
   if (!fileName || !fileName.includes('.')) return ''
   return fileName.split('.').pop().toLowerCase()
+}
+
+/**
+ * 下载名使用展示名，但保留原始扩展名，避免下载后失去文件类型。
+ */
+const withOriginalExtension = (displayName, originalName) => {
+  const ext = resolveExtension(originalName)
+  if (!ext || String(displayName || '').toLowerCase().endsWith(`.${ext}`)) return displayName || originalName
+  return `${displayName || removeFileExtension(originalName)}.${ext}`
 }
 
 /**
@@ -752,6 +1241,12 @@ const formatDate = (value) => {
   background: #008d72;
   color: #fff;
   box-shadow: 0 8px 20px rgba(0, 141, 114, 0.22);
+}
+
+.primary-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+  box-shadow: none;
 }
 
 .outline-button {
@@ -935,7 +1430,80 @@ const formatDate = (value) => {
   color: #d24a43;
 }
 
-.danger-item {
+:global(.el-dropdown-menu__item.file-menu-item) {
+  min-width: 158px;
+  height: 44px;
+  margin: 4px 6px;
+  padding: 0 12px;
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  align-items: center;
+  gap: 10px;
+  color: #455a64;
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1;
+}
+
+:global(.el-dropdown-menu__item.file-menu-item svg) {
+  width: 18px;
+  height: 18px;
+  padding: 5px;
+  border-radius: 8px;
+  background: #edf4fb;
+  color: #3b82d6;
+  box-sizing: content-box;
+}
+
+:global(.el-dropdown-menu__item.file-menu-item span) {
+  line-height: 1;
+  white-space: nowrap;
+}
+
+:global(.el-dropdown-menu__item.download-menu-item) {
+  color: #2f73c8;
+}
+
+:global(.el-dropdown-menu__item.download-menu-item:hover),
+:global(.el-dropdown-menu__item.download-menu-item:focus) {
+  background: #edf6ff;
+  color: #155eaf;
+}
+
+:global(.el-dropdown-menu__item.download-menu-item svg) {
+  background: #e5f1ff;
+  color: #2f80ed;
+}
+
+:global(.el-dropdown-menu__item.parse-menu-item) {
+  color: #00765f;
+  background: linear-gradient(135deg, rgba(232, 248, 242, 0.95), rgba(255, 255, 255, 0.92));
+}
+
+:global(.el-dropdown-menu__item.parse-menu-item:hover),
+:global(.el-dropdown-menu__item.parse-menu-item:focus) {
+  color: #005f4e;
+  background: linear-gradient(135deg, #ddf6ed, #f4fffb);
+}
+
+:global(.el-dropdown-menu__item.parse-menu-item svg) {
+  background: #dff7ee;
+  color: #008d72;
+}
+
+:global(.el-dropdown-menu__item.danger-item) {
+  color: #b94a43;
+}
+
+:global(.el-dropdown-menu__item.danger-item:hover),
+:global(.el-dropdown-menu__item.danger-item:focus) {
+  background: #fff1ef;
+  color: #a7362f;
+}
+
+:global(.el-dropdown-menu__item.danger-item svg) {
+  background: #fff0ee;
   color: #d24a43;
 }
 
@@ -989,18 +1557,21 @@ const formatDate = (value) => {
 .upload-list {
   display: grid;
   gap: 10px;
-  max-height: 420px;
+  max-height: 560px;
   overflow: auto;
 }
 
 .upload-item {
-  display: grid;
-  grid-template-columns: 48px minmax(0, 1fr);
-  gap: 12px;
   padding: 12px;
   border: 1px solid #e0ebe7;
   border-radius: 8px;
   background: #fff;
+}
+
+.upload-item-main {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr);
+  gap: 12px;
 }
 
 .upload-file-icon {
@@ -1076,6 +1647,20 @@ const formatDate = (value) => {
   align-items: center;
   gap: 8px;
   margin-top: 2px;
+  flex-wrap: wrap;
+}
+
+.upload-batch-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.upload-footer-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }
 
 .mini-action-button {
@@ -1093,6 +1678,11 @@ const formatDate = (value) => {
   cursor: pointer;
 }
 
+.mini-action-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.58;
+}
+
 .mini-action-button svg {
   width: 14px;
   height: 14px;
@@ -1102,5 +1692,66 @@ const formatDate = (value) => {
   border-color: #f3cbc8;
   background: #fff7f6;
   color: #c8443c;
+}
+
+.metadata-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px dashed #d8e7e2;
+}
+
+.metadata-panel-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.metadata-panel-head strong {
+  color: #143f35;
+}
+
+.metadata-panel-head span {
+  color: #6c7f79;
+  font-size: 13px;
+}
+
+.metadata-form {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.metadata-form label {
+  min-width: 0;
+  display: grid;
+  gap: 6px;
+}
+
+.metadata-form label > span {
+  color: #40554f;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.metadata-note {
+  grid-column: 1 / -1;
+}
+
+.metadata-form :deep(.el-select),
+.metadata-form :deep(.el-input),
+.metadata-form :deep(.el-textarea) {
+  width: 100%;
+}
+
+@media (max-width: 860px) {
+  .metadata-form {
+    grid-template-columns: 1fr;
+  }
+
+  .metadata-panel-head {
+    display: grid;
+  }
 }
 </style>

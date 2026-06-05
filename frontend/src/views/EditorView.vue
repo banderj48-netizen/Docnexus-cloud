@@ -6,7 +6,7 @@
           <ArrowLeft />
         </button>
         <div class="title-block">
-          <strong :title="docName">{{ docName }}</strong>
+          <strong :title="rawDocName">{{ docName }}</strong>
           <span>{{ saveStatusText }}</span>
         </div>
       </div>
@@ -119,6 +119,7 @@ import { ArrowLeft, Check, Download, MagicStick, Share } from '@element-plus/ico
 import { fileApi } from '../api/file'
 import { STORAGE_KEYS } from '../constants'
 import { notifyUserOperationChanged } from '../utils/sidebarStats'
+import { removeFileExtension } from '../utils/fileDisplay'
 
 const ONLYOFFICE_API_TIMEOUT_MS = 15000
 const ONLYOFFICE_READY_TIMEOUT_MS = 25000
@@ -129,6 +130,7 @@ const paperRef = ref(null)
 const loading = ref(false)
 const isSaving = ref(false)
 const docName = ref('正在加载文档')
+const rawDocName = ref('正在加载文档')
 const docContent = ref('')
 const previewUrl = ref('')
 const editable = ref(false)
@@ -221,7 +223,8 @@ const loadEditor = async () => {
 const loadOnlyOfficeEditor = async () => {
   const response = await fileApi.getOnlyOfficeConfig(fileId.value, { silent: true })
   const data = response.data || {}
-  docName.value = data.originalName || '未命名文档'
+  rawDocName.value = data.originalName || '未命名文档'
+  docName.value = removeFileExtension(rawDocName.value)
   editable.value = Boolean(data.editable)
   currentVersion.value = Number(data.currentVersion || 1)
   onlyOfficeDocumentKey.value = data.documentKey || ''
@@ -246,7 +249,8 @@ const loadFallbackEditor = async (originalError) => {
   try {
     const response = await fileApi.openEditor(fileId.value)
     const data = response.data || {}
-    docName.value = data.originalName || '未命名文档'
+    rawDocName.value = data.originalName || '未命名文档'
+    docName.value = removeFileExtension(rawDocName.value)
     editable.value = Boolean(data.editable)
     currentVersion.value = Number(data.currentVersion || 1)
     initialContentHash.value = data.contentHash || ''
@@ -264,6 +268,7 @@ const loadFallbackEditor = async (originalError) => {
     }
     docContent.value = data.contentHtml || '<p>暂无可展示文本内容</p>'
   } catch (error) {
+    rawDocName.value = '文档打开失败'
     docName.value = '文档打开失败'
     docContent.value = '<p>读取文档失败，请确认该格式是否已支持真实内容转换。</p>'
     saveStatusText.value = '打开失败'
@@ -536,7 +541,7 @@ const handleDownload = async () => {
   const url = window.URL.createObjectURL(blob)
   const link = document.createElement('a')
   link.href = url
-  link.download = docName.value
+  link.download = rawDocName.value
   link.click()
   window.URL.revokeObjectURL(url)
 }

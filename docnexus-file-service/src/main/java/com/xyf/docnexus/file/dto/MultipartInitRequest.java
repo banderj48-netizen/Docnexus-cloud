@@ -22,4 +22,16 @@ public class MultipartInitRequest {
     private Long chunkSize;
     private Integer totalChunks;
     private String knowledgeBaseId = "default";
+    private String displayName;
+    private String knowledgeSpaceCode;
+    private String knowledgeSpaceName;
+    private String businessCategoryCode;
+    private String businessCategoryName;
+    private String documentType;
+    private java.util.List<String> documentTags;
+    private String courseName;
+    private String projectName;
+    private String termName;
+    private String sourceType;
+    private String metadataDraftJson;
 }

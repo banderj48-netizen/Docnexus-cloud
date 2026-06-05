@@ -10,6 +10,34 @@ const MIN_CHUNK_SIZE = 5 * MB
 const MAX_DYNAMIC_CHUNK_SIZE = 10 * MB
 
 /**
+ * 生成上传元信息 JSON，普通上传通过 FormData 传输。
+ */
+const stringifyUploadMetadata = (metadata) => {
+    if (!metadata || typeof metadata !== 'object') return ''
+    return JSON.stringify(metadata)
+}
+
+/**
+ * 生成分片初始化请求中的元信息字段，保证大文件上传会话也能恢复草稿。
+ */
+const buildMultipartMetadata = (metadata = {}) => {
+    return {
+        displayName: metadata.displayName || '',
+        knowledgeSpaceCode: metadata.knowledgeSpaceCode || 'personal',
+        knowledgeSpaceName: metadata.knowledgeSpaceName || '个人资料库',
+        businessCategoryCode: metadata.businessCategoryCode || 'general',
+        businessCategoryName: metadata.businessCategoryName || '通用资料',
+        documentType: metadata.documentType || 'GENERAL_DOCUMENT',
+        documentTags: Array.isArray(metadata.documentTags) ? metadata.documentTags : [],
+        courseName: metadata.courseName || '',
+        projectName: metadata.projectName || '',
+        termName: metadata.termName || '',
+        sourceType: metadata.sourceType || 'USER_UPLOAD',
+        metadataDraftJson: stringifyUploadMetadata(metadata)
+    }
+}
+
+/**
  * 主动检查上传是否已被页面离开或用户取消中止，避免继续上传后续分片。
  */
 const throwIfUploadAborted = (signal) => {
@@ -52,7 +80,31 @@ export const fileApi = {
      * @param {String} fileId 文件唯一标识
      */
     getMetadata: (fileId) => {
-        return request.get(`/files/metadata/${fileId}`)
+        return request.get(`/files/${fileId}/metadata`)
+    },
+
+    /**
+     * 保存用户手动维护的文件元信息。
+     * @param {String} fileId 文件唯一标识
+     * @param {Object} data 元信息表单数据
+     */
+    saveMetadata: (fileId, data) => {
+        return request.put(`/files/${fileId}/metadata`, data)
+    },
+
+    /**
+     * 获取文件元信息 AI 建议；当前后端先按文件名和扩展名轻量推断。
+     * @param {String} fileId 文件唯一标识
+     */
+    suggestMetadata: (fileId) => {
+        return request.post(`/files/${fileId}/metadata/ai-suggest`)
+    },
+
+    /**
+     * 获取上传表单选项，包含一级知识域、二级分类、文档类型和来源类型。
+     */
+    getUploadMetadataOptions: () => {
+        return request.get('/files/upload-metadata/options')
     },
 
 
@@ -71,6 +123,10 @@ export const fileApi = {
         formData.append('file', rawFile)
         if (options.knowledgeBaseId) {
             formData.append('knowledgeBaseId', options.knowledgeBaseId)
+        }
+        const metadataJson = stringifyUploadMetadata(options.metadata)
+        if (metadataJson) {
+            formData.append('metadataJson', metadataJson)
         }
 
         return request.post('/files/upload', formData, {
@@ -117,7 +173,8 @@ export const fileApi = {
                 mimeType: rawFile.type || 'application/octet-stream',
                 chunkSize,
                 totalChunks,
-                knowledgeBaseId: options.knowledgeBaseId || 'default'
+                knowledgeBaseId: options.knowledgeBaseId || 'default',
+                ...buildMultipartMetadata(options.metadata)
             }, { signal: options.signal })
             uploadId = initRes.data.uploadId
             chunkSize = Number(initRes.data.chunkSize || chunkSize)

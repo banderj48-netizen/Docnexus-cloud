@@ -1,14 +1,19 @@
 package com.xyf.docnexus.file.service.impl;
 
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.xyf.docnexus.common.VO.PageResponse;
 import com.xyf.docnexus.common.constant.MqTopicConstants;
 import com.xyf.docnexus.file.config.FileServiceProperties;
 import com.xyf.docnexus.file.dto.*;
+import com.xyf.docnexus.file.entity.DocumentMetadata;
 import com.xyf.docnexus.file.entity.DocumentFile;
 import com.xyf.docnexus.file.entity.DocumentProcessTask;
 import com.xyf.docnexus.file.entity.FileUploadChunk;
 import com.xyf.docnexus.file.entity.FileUploadSession;
 import com.xyf.docnexus.file.mapper.DocumentFileMapper;
+import com.xyf.docnexus.file.mapper.DocumentMetadataMapper;
 import com.xyf.docnexus.file.mapper.DocumentProcessTaskMapper;
 import com.xyf.docnexus.file.mapper.FileUploadChunkMapper;
 import com.xyf.docnexus.file.mapper.FileUploadSessionMapper;
@@ -36,8 +41,10 @@ import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 
 /**
@@ -57,8 +64,15 @@ public class FileServiceImpl implements FileService {
     private static final long MIN_CHUNK_SIZE_BYTES = 5L * 1024 * 1024;
     private static final long MAX_CHUNK_SIZE_BYTES = 10L * 1024 * 1024;
     private static final int MAX_MANUAL_REPARSE_COUNT = 1;
+    private static final String DEFAULT_SPACE_CODE = "personal";
+    private static final String DEFAULT_SPACE_NAME = "个人资料库";
+    private static final String DEFAULT_CATEGORY_CODE = "general";
+    private static final String DEFAULT_CATEGORY_NAME = "通用资料";
+    private static final String DEFAULT_DOCUMENT_TYPE = "GENERAL_DOCUMENT";
+    private static final String DEFAULT_SOURCE_TYPE = "USER_UPLOAD";
 
     private final DocumentFileMapper documentFileMapper;
+    private final DocumentMetadataMapper documentMetadataMapper;
     private final FileUploadSessionMapper uploadSessionMapper;
     private final FileUploadChunkMapper uploadChunkMapper;
     private final DocumentProcessTaskMapper processTaskMapper;
@@ -67,6 +81,7 @@ public class FileServiceImpl implements FileService {
     private final DocumentFileLookupService documentFileLookupService;
     private final FileUploadFailureService uploadFailureService;
     private final FileServiceProperties properties;
+    private final ObjectMapper objectMapper;
     private final ObjectProvider<RocketMQTemplate> rocketMQTemplateProvider;
 
     /**
@@ -115,13 +130,14 @@ public class FileServiceImpl implements FileService {
      * 普通上传文件。
      */
     @Override
-    public FileUploadResponse upload(Long userId, String knowledgeBaseId, MultipartFile file) {
+    public FileUploadResponse upload(Long userId, String knowledgeBaseId, MultipartFile file, String metadataJson) {
         validateUploadFile(file, false);
         String normalizedKnowledgeBaseId = normalizeKnowledgeBaseId(knowledgeBaseId);
         String uploadId = FileIdGenerator.uploadId();
         String fileId = FileIdGenerator.fileId();
         String fileExt = FileTypeResolver.extension(file.getOriginalFilename());
-        FileUploadSession session = createSession(userId, uploadId, fileId, normalizedKnowledgeBaseId, file, fileExt, 1);
+        DocumentUploadMetadata metadata = normalizeUploadMetadata(parseUploadMetadata(metadataJson), file.getOriginalFilename());
+        FileUploadSession session = createSession(userId, uploadId, fileId, normalizedKnowledgeBaseId, file, fileExt, 1, metadata);
         uploadSessionMapper.insert(session);
         saveTemporaryItem(userId, session, "UPLOADING", 1);
 
@@ -168,6 +184,8 @@ public class FileServiceImpl implements FileService {
         session.setFileExt(fileExt);
         session.setMimeType(request.getMimeType());
         session.setFileSha256(request.getFileSha256());
+        DocumentUploadMetadata metadata = normalizeUploadMetadata(fromMultipartRequest(request), request.getFileName());
+        applyMetadataToSession(session, metadata);
         session.setChunkSize(chunkSize);
         session.setTotalChunks(totalChunks);
         session.setUploadedChunks(0);
@@ -363,10 +381,182 @@ public class FileServiceImpl implements FileService {
                             session.getUploadedChunks(),
                             indexes,
                             session.getStatus(),
-                            session.getErrorMessage()
+                            session.getErrorMessage(),
+                            session.getMetadataDraftJson()
                     );
                 })
                 .toList();
+    }
+
+    /**
+     * 查询上传元信息表单选项。
+     */
+    @Override
+    public UploadMetadataOptionsResponse uploadMetadataOptions() {
+        List<UploadMetadataOptionsResponse.KnowledgeSpaceOption> spaces = List.of(
+                optionSpace("personal", "个人资料库", List.of(
+                        option("general", "通用资料"),
+                        option("personal_note", "个人笔记"),
+                        option("reading_material", "阅读资料"),
+                        option("template", "模板"),
+                        option("personal_other", "其他")
+                )),
+                optionSpace("course", "课程学习", List.of(
+                        option("textbook", "教材/课本"),
+                        option("lecture_note", "课件/讲义"),
+                        option("course_reading", "课程阅读材料"),
+                        option("homework", "作业/实验"),
+                        option("lab_report", "实验报告"),
+                        option("exercise", "习题/题库"),
+                        option("course_project", "课程项目"),
+                        option("course_other", "其他")
+                )),
+                optionSpace("research", "科研文献", List.of(
+                        option("paper", "学术论文"),
+                        option("thesis", "学位论文"),
+                        option("review", "综述"),
+                        option("book_chapter", "专著/章节"),
+                        option("technical_report", "技术报告"),
+                        option("patent_standard", "专利/标准"),
+                        option("dataset_table", "数据集/表格"),
+                        option("reference_bibliography", "参考文献清单"),
+                        option("research_other", "其他")
+                )),
+                optionSpace("writing", "写作与规范", List.of(
+                        option("writing_rule", "论文/报告写作要求"),
+                        option("format_template", "格式模板"),
+                        option("rubric", "评分标准"),
+                        option("citation_rule", "引用规范"),
+                        option("proposal_requirement", "开题/中期要求"),
+                        option("defense_material", "答辩材料"),
+                        option("writing_other", "其他")
+                )),
+                optionSpace("application", "申请与事务", List.of(
+                        option("application_form", "申请表/报名表"),
+                        option("resume", "简历"),
+                        option("personal_statement", "个人陈述"),
+                        option("recommendation_letter", "推荐信"),
+                        option("certificate", "证书/证明"),
+                        option("scholarship", "奖学金/资助"),
+                        option("internship_job", "实习/就业材料"),
+                        option("visa_admin", "签证/行政材料"),
+                        option("application_other", "其他")
+                )),
+                optionSpace("project", "项目与报告", List.of(
+                        option("project_report", "项目报告"),
+                        option("research_plan", "研究计划"),
+                        option("survey_report", "调研报告"),
+                        option("meeting_minutes", "会议纪要"),
+                        option("presentation", "展示/PPT"),
+                        option("project_dataset", "项目数据/表格"),
+                        option("project_requirement", "项目要求/说明"),
+                        option("project_other", "其他")
+                )),
+                optionSpace("exam", "考试与复习", List.of(
+                        option("exam_paper", "试卷/真题"),
+                        option("review_note", "复习资料"),
+                        option("mistake_note", "错题整理"),
+                        option("exercise", "习题/题库"),
+                        option("exam_outline", "考试大纲"),
+                        option("exam_other", "其他")
+                )),
+                optionSpace("campus_life", "校园生活", List.of(
+                        option("schedule_plan", "日程/计划"),
+                        option("club_activity", "社团/活动"),
+                        option("life_service", "生活服务"),
+                        option("finance_receipt", "票据/报销"),
+                        option("medical_health", "医疗/健康"),
+                        option("campus_other", "其他")
+                ))
+        );
+        List<UploadMetadataOptionsResponse.OptionItem> documentTypes = List.of(
+                option("ACADEMIC_PAPER", "学术论文"),
+                option("THESIS_DISSERTATION", "学位论文"),
+                option("REVIEW_ARTICLE", "综述"),
+                option("BOOK_TEXTBOOK", "教材/书籍"),
+                option("COURSE_MATERIAL", "课程资料"),
+                option("ASSIGNMENT_HOMEWORK", "作业/实验"),
+                option("EXAM_REVIEW", "考试复习"),
+                option("APPLICATION_FORM", "申请表"),
+                option("RESUME_PROFILE", "简历"),
+                option("CERTIFICATE_PROOF", "证书/证明"),
+                option("PROJECT_REPORT", "项目报告"),
+                option("RESEARCH_PROPOSAL", "研究计划/开题"),
+                option("WRITING_REQUIREMENT", "写作要求"),
+                option("PRESENTATION", "PPT/展示"),
+                option("SPREADSHEET_TABLE", "表格/数据"),
+                option("ADMINISTRATIVE_DOCUMENT", "行政事务文档"),
+                option("LIFE_RECORD", "生活记录"),
+                option("OTHER_DOCUMENT", "其他文档"),
+                option("GENERAL_DOCUMENT", "通用文档")
+        );
+        List<UploadMetadataOptionsResponse.OptionItem> sourceTypes = List.of(
+                option("USER_UPLOAD", "用户上传"),
+                option("TEACHER_PROVIDED", "老师发放"),
+                option("PAPER_DATABASE", "论文数据库"),
+                option("SELF_ORGANIZED", "自己整理"),
+                option("OTHER", "其他")
+        );
+        return new UploadMetadataOptionsResponse(spaces, documentTypes, sourceTypes);
+    }
+
+    /**
+     * 查询单个文档元信息。
+     */
+    @Override
+    public DocumentMetadataResponse getMetadata(Long userId, String fileId) {
+        DocumentFile file = documentFileLookupService.requireFile(userId, fileId);
+        DocumentMetadata detail = documentMetadataMapper.selectByFile(userId, fileId);
+        return toMetadataResponse(file, detail);
+    }
+
+    /**
+     * 保存单个文档元信息。
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public DocumentMetadataResponse saveMetadata(Long userId, String fileId, DocumentMetadataRequest request) {
+        DocumentFile file = documentFileLookupService.requireFile(userId, fileId);
+        DocumentUploadMetadata normalized = normalizeUploadMetadata(request, file.getOriginalName());
+        file.setDisplayName(normalized.getDisplayName());
+        file.setKnowledgeSpaceCode(normalized.getKnowledgeSpaceCode());
+        file.setKnowledgeSpaceName(normalized.getKnowledgeSpaceName());
+        file.setBusinessCategoryCode(normalized.getBusinessCategoryCode());
+        file.setBusinessCategoryName(normalized.getBusinessCategoryName());
+        file.setDocumentType(normalized.getDocumentType());
+        file.setDocumentTagsJson(toJson(defaultList(normalized.getDocumentTags())));
+        file.setCourseName(normalized.getCourseName());
+        file.setProjectName(normalized.getProjectName());
+        file.setTermName(normalized.getTermName());
+        file.setSourceType(normalized.getSourceType());
+        file.setMetadataStatus("USER_FILLED");
+        if (documentFileMapper.updateUserMetadata(file) == 0) {
+            throw new IllegalArgumentException("文档元信息保存失败，请刷新后重试");
+        }
+        documentMetadataMapper.upsert(toDocumentMetadata(userId, fileId, request));
+        fileCacheService.increaseVersion(userId, file.getKnowledgeBaseId());
+        documentFileLookupService.cacheFileAfterCommit(file);
+        return getMetadata(userId, fileId);
+    }
+
+    /**
+     * 基于文件名和扩展名生成元信息建议。
+     */
+    @Override
+    public AiMetadataSuggestResponse suggestMetadata(Long userId, String fileId) {
+        DocumentFile file = documentFileLookupService.requireFile(userId, fileId);
+        DocumentUploadMetadata suggestion = suggestByFileName(file.getOriginalName(), file.getFileExt());
+        AiMetadataSuggestResponse response = new AiMetadataSuggestResponse();
+        response.setDisplayName(suggestion.getDisplayName());
+        response.setKnowledgeSpaceCode(suggestion.getKnowledgeSpaceCode());
+        response.setKnowledgeSpaceName(suggestion.getKnowledgeSpaceName());
+        response.setBusinessCategoryCode(suggestion.getBusinessCategoryCode());
+        response.setBusinessCategoryName(suggestion.getBusinessCategoryName());
+        response.setDocumentType(suggestion.getDocumentType());
+        response.setDocumentTags(defaultList(suggestion.getDocumentTags()));
+        response.setSourceType(suggestion.getSourceType());
+        response.setReason("已根据文件名和格式生成轻量建议，真实 AI 内容解析后会继续补全文献作者、期刊和摘要等字段。");
+        return response;
     }
 
     /**
@@ -377,7 +567,7 @@ public class FileServiceImpl implements FileService {
         DocumentFile file = documentFileLookupService.requireFile(userId, fileId);
         InputStreamResource resource = new InputStreamResource(objectStorageService.getObject(file.getBucketName(), file.getObjectKey()));
         ContentDisposition disposition = (inline ? ContentDisposition.inline() : ContentDisposition.attachment())
-                .filename(file.getOriginalName(), StandardCharsets.UTF_8)
+                .filename(downloadName(file), StandardCharsets.UTF_8)
                 .build();
         return ResponseEntity.ok()
                 .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
@@ -473,6 +663,11 @@ public class FileServiceImpl implements FileService {
                 "NONE",
                 summary,
                 keywordsJson,
+                "SUCCESS".equals(parseStatus) ? request.getMetadataJson() : null,
+                "SUCCESS".equals(parseStatus) ? safeInt(request.getParseQualityScore()) : 0,
+                "SUCCESS".equals(parseStatus) ? safeInt(request.getParentChunkCount()) : 0,
+                "SUCCESS".equals(parseStatus) ? safeInt(request.getChildChunkCount()) : 0,
+                "SUCCESS".equals(parseStatus) ? safeInt(request.getAssetCount()) : 0,
                 errorMessage
         );
         if (updatedRows == 0) {
@@ -494,6 +689,11 @@ public class FileServiceImpl implements FileService {
         file.setGraphStatus("NONE");
         file.setSummary(summary);
         file.setKeywordsJson(keywordsJson);
+        file.setAiMetadataJson("SUCCESS".equals(parseStatus) ? request.getMetadataJson() : null);
+        file.setParseQualityScore("SUCCESS".equals(parseStatus) ? safeInt(request.getParseQualityScore()) : 0);
+        file.setParentChunkCount("SUCCESS".equals(parseStatus) ? safeInt(request.getParentChunkCount()) : 0);
+        file.setChildChunkCount("SUCCESS".equals(parseStatus) ? safeInt(request.getChildChunkCount()) : 0);
+        file.setAssetCount("SUCCESS".equals(parseStatus) ? safeInt(request.getAssetCount()) : 0);
         file.setErrorMessage(errorMessage);
         documentFileLookupService.cacheFileAfterCommit(file);
     }
@@ -507,7 +707,8 @@ public class FileServiceImpl implements FileService {
                                             String knowledgeBaseId,
                                             MultipartFile file,
                                             String fileExt,
-                                            int totalChunks) {
+                                            int totalChunks,
+                                            DocumentUploadMetadata metadata) {
         FileUploadSession session = new FileUploadSession();
         session.setUploadId(uploadId);
         session.setUserId(userId);
@@ -518,6 +719,7 @@ public class FileServiceImpl implements FileService {
         session.setFileCategory(FileTypeResolver.category(file.getOriginalFilename()));
         session.setFileExt(fileExt);
         session.setMimeType(file.getContentType());
+        applyMetadataToSession(session, metadata);
         session.setChunkSize(properties.getUpload().getChunkSizeBytes());
         session.setTotalChunks(totalChunks);
         session.setUploadedChunks(0);
@@ -530,16 +732,28 @@ public class FileServiceImpl implements FileService {
      * 创建正式文件元数据对象。
      */
     private DocumentFile createDocumentFile(FileUploadSession session, StoredObject storedObject, String sha256) {
+        DocumentUploadMetadata metadata = normalizeUploadMetadata(metadataFromSession(session), session.getFileName());
         DocumentFile documentFile = new DocumentFile();
         documentFile.setFileId(session.getFileId());
         documentFile.setUserId(session.getUserId());
         documentFile.setKnowledgeBaseId(session.getKnowledgeBaseId());
+        documentFile.setKnowledgeSpaceCode(metadata.getKnowledgeSpaceCode());
+        documentFile.setKnowledgeSpaceName(metadata.getKnowledgeSpaceName());
+        documentFile.setBusinessCategoryCode(metadata.getBusinessCategoryCode());
+        documentFile.setBusinessCategoryName(metadata.getBusinessCategoryName());
         documentFile.setOriginalName(session.getFileName());
+        documentFile.setDisplayName(metadata.getDisplayName());
         documentFile.setFileCategory(session.getFileCategory());
         documentFile.setFileExt(session.getFileExt());
         documentFile.setMimeType(session.getMimeType());
         documentFile.setFileSize(session.getFileSize());
         documentFile.setFileSha256(sha256);
+        documentFile.setDocumentType(metadata.getDocumentType());
+        documentFile.setDocumentTagsJson(toJson(defaultList(metadata.getDocumentTags())));
+        documentFile.setCourseName(metadata.getCourseName());
+        documentFile.setProjectName(metadata.getProjectName());
+        documentFile.setTermName(metadata.getTermName());
+        documentFile.setSourceType(metadata.getSourceType());
         documentFile.setStorageType("MINIO");
         documentFile.setBucketName(storedObject.getBucketName());
         documentFile.setObjectKey(storedObject.getObjectKey());
@@ -547,6 +761,11 @@ public class FileServiceImpl implements FileService {
         documentFile.setParseStatus("NOT_REQUESTED");
         documentFile.setIndexStatus("NONE");
         documentFile.setGraphStatus("NONE");
+        documentFile.setMetadataStatus(resolveMetadataStatus(session));
+        documentFile.setParseQualityScore(0);
+        documentFile.setParentChunkCount(0);
+        documentFile.setChildChunkCount(0);
+        documentFile.setAssetCount(0);
         documentFile.setParseRetryCount(0);
         documentFile.setCurrentVersion(1);
         documentFile.setEditable(Set.of("txt", "docx", "pptx").contains(session.getFileExt()) ? 1 : 0);
@@ -554,6 +773,270 @@ public class FileServiceImpl implements FileService {
         documentFile.setDeleted(0);
         documentFile.setCreatedAt(LocalDateTime.now());
         return documentFile;
+    }
+
+    /**
+     * 把上传元信息写入上传会话。
+     */
+    private void applyMetadataToSession(FileUploadSession session, DocumentUploadMetadata metadata) {
+        DocumentUploadMetadata normalized = normalizeUploadMetadata(metadata, session.getFileName());
+        session.setDisplayName(normalized.getDisplayName());
+        session.setKnowledgeSpaceCode(normalized.getKnowledgeSpaceCode());
+        session.setKnowledgeSpaceName(normalized.getKnowledgeSpaceName());
+        session.setBusinessCategoryCode(normalized.getBusinessCategoryCode());
+        session.setBusinessCategoryName(normalized.getBusinessCategoryName());
+        session.setDocumentType(normalized.getDocumentType());
+        session.setDocumentTagsJson(toJson(defaultList(normalized.getDocumentTags())));
+        session.setMetadataDraftJson(toJson(normalized));
+    }
+
+    /**
+     * 解析普通上传表单中的元信息 JSON。
+     */
+    private DocumentUploadMetadata parseUploadMetadata(String metadataJson) {
+        if (!StringUtils.hasText(metadataJson)) {
+            return new DocumentUploadMetadata();
+        }
+        try {
+            return objectMapper.readValue(metadataJson, DocumentUploadMetadata.class);
+        } catch (Exception exception) {
+            throw new IllegalArgumentException("文档元信息 JSON 格式不正确");
+        }
+    }
+
+    /**
+     * 从分片初始化请求中提取元信息。
+     */
+    private DocumentUploadMetadata fromMultipartRequest(MultipartInitRequest request) {
+        DocumentUploadMetadata metadata = new DocumentUploadMetadata();
+        metadata.setDisplayName(request.getDisplayName());
+        metadata.setKnowledgeSpaceCode(request.getKnowledgeSpaceCode());
+        metadata.setKnowledgeSpaceName(request.getKnowledgeSpaceName());
+        metadata.setBusinessCategoryCode(request.getBusinessCategoryCode());
+        metadata.setBusinessCategoryName(request.getBusinessCategoryName());
+        metadata.setDocumentType(request.getDocumentType());
+        metadata.setDocumentTags(request.getDocumentTags());
+        metadata.setCourseName(request.getCourseName());
+        metadata.setProjectName(request.getProjectName());
+        metadata.setTermName(request.getTermName());
+        metadata.setSourceType(request.getSourceType());
+        if (StringUtils.hasText(request.getMetadataDraftJson())) {
+            try {
+                DocumentUploadMetadata draft = objectMapper.readValue(request.getMetadataDraftJson(), DocumentUploadMetadata.class);
+                metadata = mergeMetadata(metadata, draft);
+            } catch (Exception ignored) {
+                // metadataDraftJson 是前端草稿，字段级参数仍然是权威输入；草稿解析失败时不阻塞上传。
+                log.warn("分片上传元信息草稿解析失败，将使用显式字段：fileName={}", request.getFileName());
+            }
+        }
+        return metadata;
+    }
+
+    /**
+     * 从上传会话草稿恢复元信息。
+     */
+    private DocumentUploadMetadata metadataFromSession(FileUploadSession session) {
+        if (!StringUtils.hasText(session.getMetadataDraftJson())) {
+            DocumentUploadMetadata metadata = new DocumentUploadMetadata();
+            metadata.setDisplayName(session.getDisplayName());
+            metadata.setKnowledgeSpaceCode(session.getKnowledgeSpaceCode());
+            metadata.setKnowledgeSpaceName(session.getKnowledgeSpaceName());
+            metadata.setBusinessCategoryCode(session.getBusinessCategoryCode());
+            metadata.setBusinessCategoryName(session.getBusinessCategoryName());
+            metadata.setDocumentType(session.getDocumentType());
+            metadata.setDocumentTags(readStringList(session.getDocumentTagsJson()));
+            return metadata;
+        }
+        try {
+            return objectMapper.readValue(session.getMetadataDraftJson(), DocumentUploadMetadata.class);
+        } catch (Exception exception) {
+            log.warn("上传会话元信息草稿解析失败，使用会话字段兜底：uploadId={}", session.getUploadId());
+            DocumentUploadMetadata metadata = new DocumentUploadMetadata();
+            metadata.setDisplayName(session.getDisplayName());
+            metadata.setKnowledgeSpaceCode(session.getKnowledgeSpaceCode());
+            metadata.setKnowledgeSpaceName(session.getKnowledgeSpaceName());
+            metadata.setBusinessCategoryCode(session.getBusinessCategoryCode());
+            metadata.setBusinessCategoryName(session.getBusinessCategoryName());
+            metadata.setDocumentType(session.getDocumentType());
+            metadata.setDocumentTags(readStringList(session.getDocumentTagsJson()));
+            return metadata;
+        }
+    }
+
+    /**
+     * 规范化上传元信息，保证所有文件即使不填写表单也有可用默认值。
+     */
+    private DocumentUploadMetadata normalizeUploadMetadata(DocumentUploadMetadata metadata, String originalName) {
+        DocumentUploadMetadata normalized = metadata == null ? new DocumentUploadMetadata() : metadata;
+        normalized.setDisplayName(defaultIfBlank(normalized.getDisplayName(), displayNameFromOriginal(originalName)));
+        normalized.setKnowledgeSpaceCode(defaultIfBlank(normalized.getKnowledgeSpaceCode(), DEFAULT_SPACE_CODE));
+        normalized.setKnowledgeSpaceName(defaultIfBlank(normalized.getKnowledgeSpaceName(), resolveSpaceName(normalized.getKnowledgeSpaceCode())));
+        normalized.setBusinessCategoryCode(defaultIfBlank(normalized.getBusinessCategoryCode(), DEFAULT_CATEGORY_CODE));
+        normalized.setBusinessCategoryName(defaultIfBlank(normalized.getBusinessCategoryName(), resolveCategoryName(normalized.getBusinessCategoryCode())));
+        normalized.setDocumentType(defaultIfBlank(normalized.getDocumentType(), DEFAULT_DOCUMENT_TYPE));
+        normalized.setSourceType(defaultIfBlank(normalized.getSourceType(), DEFAULT_SOURCE_TYPE));
+        normalized.setDocumentTags(defaultList(normalized.getDocumentTags()).stream()
+                .map(String::trim)
+                .filter(StringUtils::hasText)
+                .distinct()
+                .limit(12)
+                .toList());
+        normalized.setCourseName(trimToNull(normalized.getCourseName()));
+        normalized.setProjectName(trimToNull(normalized.getProjectName()));
+        normalized.setTermName(trimToNull(normalized.getTermName()));
+        return normalized;
+    }
+
+    /**
+     * 草稿字段和显式字段合并，显式字段优先。
+     */
+    private DocumentUploadMetadata mergeMetadata(DocumentUploadMetadata explicit, DocumentUploadMetadata draft) {
+        DocumentUploadMetadata merged = draft == null ? new DocumentUploadMetadata() : draft;
+        if (StringUtils.hasText(explicit.getDisplayName())) merged.setDisplayName(explicit.getDisplayName());
+        if (StringUtils.hasText(explicit.getKnowledgeSpaceCode())) merged.setKnowledgeSpaceCode(explicit.getKnowledgeSpaceCode());
+        if (StringUtils.hasText(explicit.getKnowledgeSpaceName())) merged.setKnowledgeSpaceName(explicit.getKnowledgeSpaceName());
+        if (StringUtils.hasText(explicit.getBusinessCategoryCode())) merged.setBusinessCategoryCode(explicit.getBusinessCategoryCode());
+        if (StringUtils.hasText(explicit.getBusinessCategoryName())) merged.setBusinessCategoryName(explicit.getBusinessCategoryName());
+        if (StringUtils.hasText(explicit.getDocumentType())) merged.setDocumentType(explicit.getDocumentType());
+        if (explicit.getDocumentTags() != null && !explicit.getDocumentTags().isEmpty()) merged.setDocumentTags(explicit.getDocumentTags());
+        if (StringUtils.hasText(explicit.getCourseName())) merged.setCourseName(explicit.getCourseName());
+        if (StringUtils.hasText(explicit.getProjectName())) merged.setProjectName(explicit.getProjectName());
+        if (StringUtils.hasText(explicit.getTermName())) merged.setTermName(explicit.getTermName());
+        if (StringUtils.hasText(explicit.getSourceType())) merged.setSourceType(explicit.getSourceType());
+        return merged;
+    }
+
+    /**
+     * 判断元信息是用户主动填写还是默认跳过。
+     */
+    private String resolveMetadataStatus(FileUploadSession session) {
+        DocumentUploadMetadata metadata = normalizeUploadMetadata(metadataFromSession(session), session.getFileName());
+        boolean changedDisplayName = !metadata.getDisplayName().equals(displayNameFromOriginal(session.getFileName()));
+        boolean hasCustomTaxonomy = !DEFAULT_SPACE_CODE.equals(metadata.getKnowledgeSpaceCode())
+                || !DEFAULT_CATEGORY_CODE.equals(metadata.getBusinessCategoryCode())
+                || !DEFAULT_DOCUMENT_TYPE.equals(metadata.getDocumentType());
+        boolean hasExtra = !defaultList(metadata.getDocumentTags()).isEmpty()
+                || StringUtils.hasText(metadata.getCourseName())
+                || StringUtils.hasText(metadata.getProjectName())
+                || StringUtils.hasText(metadata.getTermName())
+                || !DEFAULT_SOURCE_TYPE.equals(metadata.getSourceType());
+        return changedDisplayName || hasCustomTaxonomy || hasExtra ? "USER_FILLED" : "USER_SKIPPED";
+    }
+
+    /**
+     * 转换详细元数据保存对象。
+     */
+    private DocumentMetadata toDocumentMetadata(Long userId, String fileId, DocumentMetadataRequest request) {
+        DocumentMetadata metadata = new DocumentMetadata();
+        metadata.setFileId(fileId);
+        metadata.setUserId(userId);
+        metadata.setTitle(trimToNull(request.getTitle()));
+        metadata.setAuthorsJson(toJson(defaultList(request.getAuthors())));
+        metadata.setInstitution(trimToNull(request.getInstitution()));
+        metadata.setJournal(trimToNull(request.getJournal()));
+        metadata.setConferenceName(trimToNull(request.getConferenceName()));
+        metadata.setPublisher(trimToNull(request.getPublisher()));
+        metadata.setPublishYear(request.getPublishYear());
+        metadata.setDoi(trimToNull(request.getDoi()));
+        metadata.setIsbn(trimToNull(request.getIsbn()));
+        metadata.setAbstractText(trimToNull(request.getAbstractText()));
+        metadata.setReferenceCount(request.getReferenceCount() == null ? 0 : Math.max(0, request.getReferenceCount()));
+        metadata.setAssignmentSubject(trimToNull(request.getAssignmentSubject()));
+        metadata.setReportType(trimToNull(request.getReportType()));
+        metadata.setRequirementType(trimToNull(request.getRequirementType()));
+        metadata.setFormPurpose(trimToNull(request.getFormPurpose()));
+        metadata.setExtractionSource("USER");
+        metadata.setEvidenceJson("{}");
+        return metadata;
+    }
+
+    /**
+     * 构造元信息响应。
+     */
+    private DocumentMetadataResponse toMetadataResponse(DocumentFile file, DocumentMetadata detail) {
+        DocumentMetadataResponse response = new DocumentMetadataResponse();
+        response.setFileId(file.getFileId());
+        response.setOriginalName(file.getOriginalName());
+        response.setDisplayName(defaultIfBlank(file.getDisplayName(), displayNameFromOriginal(file.getOriginalName())));
+        response.setKnowledgeSpaceCode(defaultIfBlank(file.getKnowledgeSpaceCode(), DEFAULT_SPACE_CODE));
+        response.setKnowledgeSpaceName(defaultIfBlank(file.getKnowledgeSpaceName(), DEFAULT_SPACE_NAME));
+        response.setBusinessCategoryCode(defaultIfBlank(file.getBusinessCategoryCode(), DEFAULT_CATEGORY_CODE));
+        response.setBusinessCategoryName(defaultIfBlank(file.getBusinessCategoryName(), DEFAULT_CATEGORY_NAME));
+        response.setDocumentType(defaultIfBlank(file.getDocumentType(), DEFAULT_DOCUMENT_TYPE));
+        response.setDocumentTags(readStringList(file.getDocumentTagsJson()));
+        response.setCourseName(file.getCourseName());
+        response.setProjectName(file.getProjectName());
+        response.setTermName(file.getTermName());
+        response.setSourceType(defaultIfBlank(file.getSourceType(), DEFAULT_SOURCE_TYPE));
+        response.setMetadataStatus(defaultIfBlank(file.getMetadataStatus(), "USER_SKIPPED"));
+        response.setAiMetadataJson(file.getAiMetadataJson());
+        if (detail != null) {
+            response.setTitle(detail.getTitle());
+            response.setAuthors(readStringList(detail.getAuthorsJson()));
+            response.setInstitution(detail.getInstitution());
+            response.setJournal(detail.getJournal());
+            response.setConferenceName(detail.getConferenceName());
+            response.setPublisher(detail.getPublisher());
+            response.setPublishYear(detail.getPublishYear());
+            response.setDoi(detail.getDoi());
+            response.setIsbn(detail.getIsbn());
+            response.setAbstractText(detail.getAbstractText());
+            response.setReferenceCount(detail.getReferenceCount());
+            response.setAssignmentSubject(detail.getAssignmentSubject());
+            response.setReportType(detail.getReportType());
+            response.setRequirementType(detail.getRequirementType());
+            response.setFormPurpose(detail.getFormPurpose());
+        }
+        return response;
+    }
+
+    /**
+     * 基于文件名做轻量元信息建议。
+     */
+    private DocumentUploadMetadata suggestByFileName(String fileName, String fileExt) {
+        String normalizedName = fileName == null ? "" : fileName.toLowerCase();
+        DocumentUploadMetadata metadata = new DocumentUploadMetadata();
+        metadata.setDisplayName(displayNameFromOriginal(fileName));
+        metadata.setSourceType(DEFAULT_SOURCE_TYPE);
+        if (normalizedName.contains("论文") || normalizedName.contains("paper") || normalizedName.contains("doi")) {
+            metadata.setKnowledgeSpaceCode("research");
+            metadata.setBusinessCategoryCode("paper");
+            metadata.setDocumentType("ACADEMIC_PAPER");
+            metadata.setDocumentTags(List.of("论文"));
+        } else if (normalizedName.contains("作业") || normalizedName.contains("实验")) {
+            metadata.setKnowledgeSpaceCode("course");
+            metadata.setBusinessCategoryCode("homework");
+            metadata.setDocumentType("ASSIGNMENT_HOMEWORK");
+            metadata.setDocumentTags(List.of("作业"));
+        } else if (normalizedName.contains("申请") || normalizedName.contains("报名")) {
+            metadata.setKnowledgeSpaceCode("application");
+            metadata.setBusinessCategoryCode("application_form");
+            metadata.setDocumentType("APPLICATION_FORM");
+            metadata.setDocumentTags(List.of("申请"));
+        } else if (normalizedName.contains("简历") || normalizedName.contains("resume")) {
+            metadata.setKnowledgeSpaceCode("application");
+            metadata.setBusinessCategoryCode("resume");
+            metadata.setDocumentType("RESUME_PROFILE");
+            metadata.setDocumentTags(List.of("简历"));
+        } else if (normalizedName.contains("要求") || normalizedName.contains("规范")) {
+            metadata.setKnowledgeSpaceCode("writing");
+            metadata.setBusinessCategoryCode("writing_rule");
+            metadata.setDocumentType("WRITING_REQUIREMENT");
+            metadata.setDocumentTags(List.of("写作要求"));
+        } else if ("ppt".equals(fileExt) || "pptx".equals(fileExt)) {
+            metadata.setKnowledgeSpaceCode("project");
+            metadata.setBusinessCategoryCode("presentation");
+            metadata.setDocumentType("PRESENTATION");
+            metadata.setDocumentTags(List.of("展示"));
+        } else {
+            metadata.setKnowledgeSpaceCode(DEFAULT_SPACE_CODE);
+            metadata.setBusinessCategoryCode(DEFAULT_CATEGORY_CODE);
+            metadata.setDocumentType(DEFAULT_DOCUMENT_TYPE);
+            metadata.setDocumentTags(List.of());
+        }
+        metadata.setKnowledgeSpaceName(resolveSpaceName(metadata.getKnowledgeSpaceCode()));
+        metadata.setBusinessCategoryName(resolveCategoryName(metadata.getBusinessCategoryCode()));
+        return normalizeUploadMetadata(metadata, fileName);
     }
 
     /**
@@ -649,7 +1132,9 @@ public class FileServiceImpl implements FileService {
         item.setId(session.getFileId());
         item.setFileId(session.getFileId());
         item.setUploadId(session.getUploadId());
-        item.setName(session.getFileName());
+        item.setName(defaultIfBlank(session.getDisplayName(), displayNameFromOriginal(session.getFileName())));
+        item.setOriginalName(session.getFileName());
+        item.setDisplayName(defaultIfBlank(session.getDisplayName(), displayNameFromOriginal(session.getFileName())));
         item.setType(FileTypeResolver.shortType(session.getFileName()));
         item.setFileExt(session.getFileExt());
         item.setFileSize(session.getFileSize());
@@ -676,6 +1161,13 @@ public class FileServiceImpl implements FileService {
         item.setGraphTone("idle");
         item.setProgress(progress);
         item.setErrorMessage(session.getErrorMessage());
+        item.setKnowledgeSpaceCode(session.getKnowledgeSpaceCode());
+        item.setKnowledgeSpaceName(session.getKnowledgeSpaceName());
+        item.setBusinessCategoryCode(session.getBusinessCategoryCode());
+        item.setBusinessCategoryName(session.getBusinessCategoryName());
+        item.setDocumentType(session.getDocumentType());
+        item.setDocumentTagsJson(session.getDocumentTagsJson());
+        item.setMetadataStatus(resolveMetadataStatus(session));
         return item;
     }
 
@@ -794,6 +1286,171 @@ public class FileServiceImpl implements FileService {
      */
     private String defaultIfBlank(String value, String fallback) {
         return StringUtils.hasText(value) ? value : fallback;
+    }
+
+    /**
+     * 空字符串转 null，避免把无意义空白写入数据库。
+     */
+    private String trimToNull(String value) {
+        return StringUtils.hasText(value) ? value.trim() : null;
+    }
+
+    /**
+     * 获取非空列表。
+     */
+    private List<String> defaultList(List<String> values) {
+        return values == null ? List.of() : values;
+    }
+
+    /**
+     * 安全读取整数，空值按 0 处理。
+     */
+    private Integer safeInt(Integer value) {
+        return value == null || value < 0 ? 0 : value;
+    }
+
+    /**
+     * 对象序列化为 JSON 字符串。
+     */
+    private String toJson(Object value) {
+        try {
+            return objectMapper.writeValueAsString(value);
+        } catch (JsonProcessingException exception) {
+            throw new IllegalArgumentException("文档元信息序列化失败", exception);
+        }
+    }
+
+    /**
+     * 从 JSON 数组读取字符串列表。
+     */
+    private List<String> readStringList(String json) {
+        if (!StringUtils.hasText(json)) {
+            return List.of();
+        }
+        try {
+            return objectMapper.readValue(json, new TypeReference<List<String>>() {});
+        } catch (Exception exception) {
+            return List.of();
+        }
+    }
+
+    /**
+     * 根据原始文件名生成默认展示名。
+     */
+    private String displayNameFromOriginal(String originalName) {
+        if (!StringUtils.hasText(originalName)) {
+            return "未命名文档";
+        }
+        String trimmed = originalName.trim();
+        int index = trimmed.lastIndexOf('.');
+        return index > 0 ? trimmed.substring(0, index) : trimmed;
+    }
+
+    /**
+     * 构造下载文件名，展示名没有扩展名时自动补回原扩展名。
+     */
+    private String downloadName(DocumentFile file) {
+        String displayName = defaultIfBlank(file.getDisplayName(), displayNameFromOriginal(file.getOriginalName()));
+        String ext = FileTypeResolver.extension(file.getOriginalName());
+        if (!StringUtils.hasText(ext) || displayName.toLowerCase().endsWith("." + ext)) {
+            return displayName;
+        }
+        return displayName + "." + ext;
+    }
+
+    /**
+     * 构造知识域选项。
+     */
+    private UploadMetadataOptionsResponse.KnowledgeSpaceOption optionSpace(
+            String code,
+            String name,
+            List<UploadMetadataOptionsResponse.OptionItem> categories
+    ) {
+        return new UploadMetadataOptionsResponse.KnowledgeSpaceOption(code, name, categories);
+    }
+
+    /**
+     * 构造通用选项。
+     */
+    private UploadMetadataOptionsResponse.OptionItem option(String code, String name) {
+        return new UploadMetadataOptionsResponse.OptionItem(code, name);
+    }
+
+    /**
+     * 根据知识域编码解析展示名。
+     */
+    private String resolveSpaceName(String code) {
+        return switch (defaultIfBlank(code, DEFAULT_SPACE_CODE)) {
+            case "course" -> "课程学习";
+            case "research" -> "科研文献";
+            case "writing" -> "写作与规范";
+            case "application" -> "申请与事务";
+            case "project" -> "项目与报告";
+            case "exam" -> "考试与复习";
+            case "campus_life" -> "校园生活";
+            default -> DEFAULT_SPACE_NAME;
+        };
+    }
+
+    /**
+     * 根据二级分类编码解析展示名。
+     */
+    private String resolveCategoryName(String code) {
+        return switch (defaultIfBlank(code, DEFAULT_CATEGORY_CODE)) {
+            case "paper" -> "学术论文";
+            case "thesis" -> "学位论文";
+            case "review" -> "综述";
+            case "book_chapter" -> "专著/章节";
+            case "technical_report" -> "技术报告";
+            case "patent_standard" -> "专利/标准";
+            case "lecture_note" -> "课件/讲义";
+            case "textbook" -> "教材/课本";
+            case "course_reading" -> "课程阅读材料";
+            case "homework" -> "作业/实验";
+            case "lab_report" -> "实验报告";
+            case "exercise" -> "习题/题库";
+            case "course_project" -> "课程项目";
+            case "report" -> "报告/调研";
+            case "project_report" -> "项目报告";
+            case "research_plan" -> "研究计划";
+            case "survey_report" -> "调研报告";
+            case "meeting_minutes" -> "会议纪要";
+            case "writing_rule" -> "论文/报告写作要求";
+            case "format_template" -> "格式模板";
+            case "rubric" -> "评分标准";
+            case "citation_rule" -> "引用规范";
+            case "proposal_requirement" -> "开题/中期要求";
+            case "defense_material" -> "答辩材料";
+            case "application_form" -> "申请表/报名表";
+            case "resume" -> "简历";
+            case "personal_statement" -> "个人陈述";
+            case "recommendation_letter" -> "推荐信";
+            case "certificate" -> "证书/证明";
+            case "scholarship" -> "奖学金/资助";
+            case "internship_job" -> "实习/就业材料";
+            case "visa_admin" -> "签证/行政材料";
+            case "template" -> "模板";
+            case "personal_note" -> "个人笔记";
+            case "reading_material" -> "阅读资料";
+            case "dataset_table" -> "表格/数据";
+            case "reference_bibliography" -> "参考文献清单";
+            case "presentation" -> "展示/PPT";
+            case "project_dataset" -> "项目数据/表格";
+            case "project_requirement" -> "项目要求/说明";
+            case "exam" -> "考试复习";
+            case "exam_paper" -> "试卷/真题";
+            case "review_note" -> "复习资料";
+            case "mistake_note" -> "错题整理";
+            case "exam_outline" -> "考试大纲";
+            case "schedule_plan" -> "日程/计划";
+            case "club_activity" -> "社团/活动";
+            case "life_service" -> "生活服务";
+            case "finance_receipt" -> "票据/报销";
+            case "medical_health" -> "医疗/健康";
+            case "personal_other", "course_other", "research_other", "writing_other",
+                    "application_other", "project_other", "exam_other", "campus_other" -> "其他";
+            default -> DEFAULT_CATEGORY_NAME;
+        };
     }
 
     /**

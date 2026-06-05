@@ -38,7 +38,7 @@
           </div>
           <div v-for="file in files" :key="file.fileId || file.id" class="deliverable-row">
             <div>
-              <strong>{{ file.fileName || file.filename }}</strong>
+              <strong>{{ displayFileName(file) }}</strong>
               <small>{{ displaySummary(file) || formatFileMeta(file) }}</small>
             </div>
             <em>{{ fileStatusLabel(file) }}</em>
@@ -73,6 +73,7 @@ import { useRouter } from 'vue-router'
 import StudioLayout from '../components/StudioLayout.vue'
 import { workspaceApi } from '../api/workspace'
 import { filterDeletingFiles } from '../utils/deletedFiles'
+import { removeFileExtension, resolveFileTypeLabel } from '../utils/fileDisplay'
 import { Collection, DataAnalysis, Files, Refresh } from '@element-plus/icons-vue'
 
 const router = useRouter()
@@ -126,6 +127,11 @@ const displayKeywords = (file) => {
   return keywords.length ? keywords.join('、') : '-'
 }
 
+/**
+ * 函数功能：展示不带后缀的文件名。
+ */
+const displayFileName = (file) => removeFileExtension(file.fileName || file.filename || file.originalName || '')
+
 const formatFileSize = (size) => {
   if (!size) return '0 B'
   const units = ['B', 'KB', 'MB', 'GB']
@@ -138,7 +144,7 @@ const formatFileSize = (size) => {
   return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`
 }
 
-const formatFileMeta = (file) => `${file.fileType || '未知类型'} / ${formatFileSize(file.fileSize)}`
+const formatFileMeta = (file) => `${file.fileType || resolveFileTypeLabel(file.fileName || file.filename)} / ${formatFileSize(file.fileSize)}`
 
 const refresh = async () => {
   try {
